@@ -2,6 +2,9 @@
 //! updated together behind a single lock so the two views of the shard can never diverge —
 //! every inserted document is immediately findable both lexically and semantically.
 
+use std::sync::Arc;
+
+use common::embed::Embedder;
 use common::pb::FlightDocument;
 
 use crate::index::{InvertedIndex, SearchResults};
@@ -13,11 +16,26 @@ pub struct ShardStore {
 }
 
 impl ShardStore {
+    /// Store over the default deterministic hash embedder.
     pub fn new() -> Self {
         Self {
             keyword: InvertedIndex::new(),
             vector: VectorIndex::new(),
         }
+    }
+
+    /// Store over a caller-chosen embedder (must be identical on every node — see
+    /// [`VectorIndex::with_embedder`]).
+    pub fn with_embedder(embedder: Arc<dyn Embedder>) -> Self {
+        Self {
+            keyword: InvertedIndex::new(),
+            vector: VectorIndex::with_embedder(embedder),
+        }
+    }
+
+    /// Dimensionality of the vector side's embedding space.
+    pub fn embed_dim(&self) -> usize {
+        self.vector.dim()
     }
 
     /// Index one document in both views.

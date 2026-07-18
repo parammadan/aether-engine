@@ -23,8 +23,10 @@
 
 use crate::shard::fnv1a_64;
 
-/// Dimensionality of the embedding space. Every node must agree on this (it's part of the
-/// contract); changing it re-embeds the world.
+/// Dimensionality of the [`HashEmbedder`]'s space. The authoritative dimension for any
+/// embedder is [`Embedder::dim`] — different implementations have different dims (a learned
+/// model is typically 384), and every node in a cluster must use the same embedder, so the
+/// dim doubles as a cheap cross-node consistency check on the wire.
 pub const EMBED_DIM: usize = 128;
 
 /// A deterministic text embedder. Implementations MUST produce identical output for identical

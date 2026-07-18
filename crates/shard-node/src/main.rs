@@ -35,8 +35,31 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
+/// Build the shard's document store with the configured embedder.
+///
+/// `AETHER_EMBEDDER=hash` (default) uses the deterministic feature-hashing embedder;
+/// `AETHER_EMBEDDER=onnx` loads a learned sentence-transformer from
+/// `AETHER_ONNX_MODEL_DIR` (requires building with `--features onnx`). Every node in a
+/// cluster MUST use the same embedder and model — embeddings are a cross-node contract, and
+/// the shard rejects query vectors whose dimension doesn't match its own.
+fn build_store() -> Result<ShardStore, Box<dyn std::error::Error + Send + Sync>> {
+    if std::env::var("AETHER_EMBEDDER").as_deref() == Ok("onnx") {
+        #[cfg(feature = "onnx")]
+        {
+            let dir = std::env::var("AETHER_ONNX_MODEL_DIR")
+                .map_err(|_| "AETHER_EMBEDDER=onnx requires AETHER_ONNX_MODEL_DIR")?;
+            let embedder = common::embed_onnx::OnnxEmbedder::from_dir(std::path::Path::new(&dir))?;
+            println!("embedder: onnx model at {dir} (dim {})", common::embed::Embedder::dim(&embedder));
+            return Ok(ShardStore::with_embedder(Arc::new(embedder)));
+        }
+        #[cfg(not(feature = "onnx"))]
+        return Err("AETHER_EMBEDDER=onnx, but this binary was built without --features onnx".into());
+    }
+    Ok(ShardStore::new())
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr_str = std::env::var("AETHER_SHARD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let addr: SocketAddr = addr_str.parse()?;
     let shard_index: u32 = env_or("AETHER_SHARD_INDEX", 0);
@@ -48,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let coordinator = std::env::var("AETHER_COORDINATOR_ADDR").ok();
 
     let shard_id_label = format!("shard-{shard_index}");
-    let index = Arc::new(RwLock::new(ShardStore::new()));
+    let index = Arc::new(RwLock::new(build_store()?));
 
     // Register with the coordinator if configured. A failure is logged but does NOT stop the
     // node from serving: the data plane keeps running even if the control plane is down.

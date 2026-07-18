@@ -39,3 +39,7 @@ Thumbs.db
 /data
 **/data
 *.log
+
+# ---- Model weights (fetched by scripts/fetch-model.sh, never committed) ----
+/models
+*.onnx

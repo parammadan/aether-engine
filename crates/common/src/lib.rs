@@ -16,4 +16,6 @@ pub mod pb {
 }
 
 pub mod embed;
+#[cfg(feature = "onnx")]
+pub mod embed_onnx;
 pub mod shard;

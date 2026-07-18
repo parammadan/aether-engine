@@ -21,6 +21,10 @@ async-trait = "0.1"
 # Approximate nearest-neighbour index (pure Rust HNSW) for semantic search.
 hnsw_rs = "0.3"
 
+[features]
+# Learned-model embeddings (ONNX Runtime) — select at runtime with AETHER_EMBEDDER=onnx.
+onnx = ["common/onnx"]
+
 [dev-dependencies]
 # Adapts a bound TcpListener into a stream for tonic's serve_with_incoming, so the
 # integration test can grab an ephemeral port instead of racing on a fixed one.

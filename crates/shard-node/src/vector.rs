@@ -12,6 +12,7 @@
 //! - Inserts are incremental, matching the ingestion loop; no batch rebuild.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use common::embed::{dot, Embedder, HashEmbedder};
 use common::pb::FlightDocument;
@@ -49,7 +50,7 @@ pub struct VectorHit<'a> {
 /// slot keeping the best match, and the superseded vector lingers in the graph (bounded by
 /// how rarely text actually changes — an accepted, documented cost of no-delete HNSW).
 pub struct VectorIndex {
-    embedder: HashEmbedder,
+    embedder: Arc<dyn Embedder>,
     docs: Vec<FlightDocument>,
     /// Current embeddable text per slot, to detect when a re-observation needs a new vector.
     texts: Vec<String>,
@@ -66,9 +67,17 @@ pub struct VectorIndex {
 }
 
 impl VectorIndex {
+    /// Default index over the deterministic hash embedder.
     pub fn new() -> Self {
+        Self::with_embedder(Arc::new(HashEmbedder))
+    }
+
+    /// Index over a caller-chosen embedder. Every node in a cluster must be constructed with
+    /// the SAME embedder (same implementation, same model) — embeddings are a cross-node
+    /// contract, and mixed embedders make replica vectors and query scores incomparable.
+    pub fn with_embedder(embedder: Arc<dyn Embedder>) -> Self {
         Self {
-            embedder: HashEmbedder,
+            embedder,
             docs: Vec::new(),
             texts: Vec::new(),
             by_key: HashMap::new(),
@@ -76,6 +85,11 @@ impl VectorIndex {
             vectors_total: 0,
             hnsw: Hnsw::new(MAX_CONNECTIONS, CAPACITY_HINT, MAX_LAYERS, EF_CONSTRUCTION, DistCosine {}),
         }
+    }
+
+    /// Dimensionality of this index's embedding space (a query vector must match it).
+    pub fn dim(&self) -> usize {
+        self.embedder.dim()
     }
 
     /// Number of distinct documents (aircraft) indexed.

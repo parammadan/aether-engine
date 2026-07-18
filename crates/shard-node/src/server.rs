@@ -15,7 +15,6 @@ use std::sync::{Arc, RwLock};
 
 use tonic::{Request, Response, Status};
 
-use common::embed::EMBED_DIM;
 use common::pb::shard_search_server::ShardSearch;
 use common::pb::{SearchHit, SearchRequest, SearchResponse, VectorSearchRequest};
 
@@ -81,21 +80,23 @@ impl ShardSearch for ShardSearchService {
         request: Request<VectorSearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
-
-        // The embedding dimension is part of the wire contract: a wrong-sized vector is a
-        // caller bug (or a version skew), so reject it loudly instead of scoring garbage.
-        if req.vector.len() != EMBED_DIM {
-            return Err(Status::invalid_argument(format!(
-                "query vector has {} dims, expected {EMBED_DIM}",
-                req.vector.len()
-            )));
-        }
         let k = if req.limit == 0 { DEFAULT_KNN } else { req.limit as usize };
 
         let store = self
             .store
             .read()
             .map_err(|_| Status::internal("store lock poisoned"))?;
+
+        // The embedding dimension is part of the wire contract: a wrong-sized vector means
+        // the caller embedded with a different model than this shard (or a version skew),
+        // so reject it loudly instead of scoring garbage.
+        let expected = store.embed_dim();
+        if req.vector.len() != expected {
+            return Err(Status::invalid_argument(format!(
+                "query vector has {} dims, this shard embeds at {expected}",
+                req.vector.len()
+            )));
+        }
 
         let hits: Vec<SearchHit> = store
             .vector_search(&req.vector, k)

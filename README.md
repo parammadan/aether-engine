@@ -68,6 +68,15 @@ Queries can also be **streamed**: `SearchStream` emits a refined result each tim
 reports, so results materialize progressively and keep converging even if a shard dies
 mid-aggregation.
 
+Each shard also serves **semantic vector search** (`VectorSearch`): documents are embedded
+into a vector space and queried by k-nearest-neighbour over an HNSW index (with an exact
+scan below a size threshold, where approximate search doesn't pay). The default embedder is
+a deterministic feature-hashing baseline; an ONNX sentence-transformer (quantized MiniLM)
+is available behind the `onnx` feature — fetch the model with `scripts/fetch-model.sh` and
+select it with `AETHER_EMBEDDER=onnx AETHER_ONNX_MODEL_DIR=...`. Every node in a cluster
+must use the same embedder: embeddings are a cross-node contract, and shards reject query
+vectors whose dimension doesn't match their own.
+
 ## Run
 
 A single node:

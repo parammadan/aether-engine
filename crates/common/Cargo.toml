@@ -12,6 +12,13 @@ license.workspace = true
 [dependencies]
 tonic.workspace = true
 prost.workspace = true
+ort = { version = "2.0.0-rc.12", optional = true }
+tokenizers = { version = "0.23", optional = true }
 
 [build-dependencies]
 tonic-build.workspace = true
+
+[features]
+# Learned-model embeddings via ONNX Runtime. Off by default: the native runtime and
+# tokenizer are heavy dependencies, and the deterministic hash embedder covers dev/tests.
+onnx = ["dep:ort", "dep:tokenizers"]
