@@ -49,15 +49,21 @@ aether-engine/
 
 ## Status
 
-Early work in progress. A single shard node serves keyword search over gRPC: the
-`aether.v1` contract, shard-key hashing, an in-memory inverted index, and the
-`ShardSearch` gRPC server are in place (index currently seeded with sample documents).
-Next: live ingestion from OpenSky. The coordinator (control plane) is still a stub.
+**Q1 complete (single node):** a shard node ingests live flight data from OpenSky into an
+in-memory inverted index and serves keyword search over gRPC — the `aether.v1` contract,
+shard-key hashing, the inverted index, the `ShardSearch` server, and the ingestion loop
+(pull-based, with backpressure). Verified end-to-end against live data (~13k flights).
+
+Next: **Q2 — the spine** (N-parameterized coordinator, `hash(icao24) % N` sharding,
+scatter-gather, leader→follower replication). The coordinator is currently a stub.
 
 Run it:
 
 ```bash
-cargo run -p shard-node        # serves ShardSearch on 127.0.0.1:50051
+# terminal 1 — start a node (ingests live OpenSky, serves on :50051)
+cargo run -p shard-node
+# terminal 2 — query it
+cargo run -p shard-node --example query -- united 5
 ```
 
 ## Build
