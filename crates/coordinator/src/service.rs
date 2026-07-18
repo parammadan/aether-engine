@@ -1,6 +1,7 @@
 //! The `Coordinator` gRPC service: node registration and scatter-gather search.
 
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use tonic::{Request, Response, Status};
 
@@ -90,7 +91,7 @@ impl Coordinator for CoordinatorService {
             .write()
             .map_err(|_| Status::internal("registry lock poisoned"))?;
         Ok(Response::new(HeartbeatResponse {
-            known: registry.heartbeat(&node_id),
+            known: registry.heartbeat(&node_id, Instant::now()),
         }))
     }
 }

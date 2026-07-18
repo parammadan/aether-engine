@@ -40,12 +40,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ticker = tokio::time::interval(reap_every);
         loop {
             ticker.tick().await;
-            let removed = reaper_registry
-                .write()
-                .expect("registry lock poisoned")
-                .reap_dead(Instant::now(), liveness_timeout);
+            // Reap dead nodes and fail over orphaned shards atomically under one write lock.
+            let (removed, promotions) = {
+                let mut reg = reaper_registry.write().expect("registry lock poisoned");
+                let now = Instant::now();
+                let removed = reg.reap_dead(now, liveness_timeout);
+                let promotions = reg.promote_orphaned_shards();
+                (removed, promotions)
+            };
             for node in removed {
                 println!("coordinator: dropped dead node '{}' ({:?})", node.node_id, node.role);
+            }
+            for (shard, node_id) in promotions {
+                println!("coordinator: promoted '{node_id}' to leader of shard {shard} (failover)");
             }
         }
     });

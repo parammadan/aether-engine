@@ -121,9 +121,9 @@ impl Registry {
     }
 
     /// Refresh a node's liveness (called on heartbeat). Returns false if the node isn't known,
-    /// which tells the node to register again (e.g. after a coordinator restart).
-    pub fn heartbeat(&mut self, node_id: &str) -> bool {
-        let now = Instant::now();
+    /// which tells the node to register again (e.g. after a coordinator restart). `now` is a
+    /// parameter so liveness/promotion are deterministic to test.
+    pub fn heartbeat(&mut self, node_id: &str, now: Instant) -> bool {
         for node in self.leaders.values_mut() {
             if node.node_id == node_id {
                 node.last_seen = now;
@@ -170,6 +170,35 @@ impl Registry {
         }
 
         removed
+    }
+
+    /// For any shard that has followers but no leader (its leader was reaped), promote one
+    /// follower to leader and update the shard map. Returns `(shard_id, promoted node_id)` for
+    /// each promotion. Because the promoted node already holds the replicated data and serves
+    /// `ShardSearch`, scatter-gather starts routing to it immediately — this is failover.
+    pub fn promote_orphaned_shards(&mut self) -> Vec<(u32, String)> {
+        let mut promotions = Vec::new();
+
+        let shards_with_followers: Vec<u32> = self.followers.keys().copied().collect();
+        for shard in shards_with_followers {
+            if self.leaders.contains_key(&shard) {
+                continue; // shard still has a live leader
+            }
+            // Take one follower (the borrow of `followers` ends on this line).
+            let candidate = self.followers.get_mut(&shard).and_then(|f| f.pop());
+            if let Some(mut node) = candidate {
+                node.role = NodeRole::Leader;
+                let node_id = node.node_id.clone();
+                self.leaders.insert(shard, node);
+                promotions.push((shard, node_id));
+
+                if self.followers.get(&shard).map_or(false, |f| f.is_empty()) {
+                    self.followers.remove(&shard);
+                }
+            }
+        }
+
+        promotions
     }
 }
 
@@ -264,13 +293,53 @@ mod tests {
         let mut reg = Registry::new(1);
         reg.register(req("l0", 0, NodeRole::Leader));
 
-        assert!(reg.heartbeat("l0")); // known
-        assert!(!reg.heartbeat("ghost")); // unknown -> should re-register
+        let now = Instant::now();
+        assert!(reg.heartbeat("l0", now)); // known
+        assert!(!reg.heartbeat("ghost", now)); // unknown -> should re-register
 
         // A reap a moment after the heartbeat leaves it alive.
-        let soon = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let soon = now.checked_add(Duration::from_secs(1)).unwrap();
         assert!(reg.reap_dead(soon, Duration::from_secs(30)).is_empty());
         assert_eq!(reg.leaders_registered(), 1);
+    }
+
+    #[test]
+    fn dead_leader_with_live_follower_is_failed_over() {
+        let mut reg = Registry::new(1);
+        let t0 = Instant::now();
+        reg.register(req("leader", 0, NodeRole::Leader));
+        let mut follower = req("follower", 0, NodeRole::Follower);
+        follower.address = "127.0.0.1:7000".to_string();
+        reg.register(follower);
+
+        // 60s later the follower heartbeats (fresh) but the leader does not.
+        let now = t0.checked_add(Duration::from_secs(60)).unwrap();
+        reg.heartbeat("follower", now);
+
+        // The reaper drops the stale leader...
+        let removed = reg.reap_dead(now, Duration::from_secs(30));
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].node_id, "leader");
+        assert!(!reg.all_shards_have_leader()); // shard 0 momentarily leaderless
+
+        // ...then promotes the live follower to leader.
+        let promotions = reg.promote_orphaned_shards();
+        assert_eq!(promotions, vec![(0u32, "follower".to_string())]);
+        assert!(reg.all_shards_have_leader());
+        assert_eq!(reg.leader_addresses(), vec!["127.0.0.1:7000".to_string()]);
+        assert!(reg.follower_addresses(0).is_empty()); // the follower became the leader
+    }
+
+    #[test]
+    fn orphaned_shard_without_a_follower_stays_leaderless() {
+        let mut reg = Registry::new(1);
+        let t0 = Instant::now();
+        reg.register(req("leader", 0, NodeRole::Leader));
+
+        let now = t0.checked_add(Duration::from_secs(60)).unwrap();
+        reg.reap_dead(now, Duration::from_secs(30)); // leader gone, no follower to promote
+        assert!(reg.promote_orphaned_shards().is_empty());
+        assert!(!reg.all_shards_have_leader());
     }
 
     #[test]

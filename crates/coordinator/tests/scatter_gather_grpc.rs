@@ -125,6 +125,57 @@ async fn coordinator_merges_results_across_shards() {
 }
 
 #[tokio::test]
+async fn failover_promotes_follower_and_queries_route_to_it() {
+    use std::time::{Duration, Instant};
+
+    // Two nodes for shard 0 with distinguishable data, so we can tell who answered.
+    let leader_addr = start_stub_shard(shard_reply("shard-0", 1, vec![hit("leaderdoc", 1.0)])).await;
+    let follower_addr = start_stub_shard(shard_reply("shard-0", 1, vec![hit("followerdoc", 1.0)])).await;
+
+    let registry = Arc::new(RwLock::new(Registry::new(1)));
+    registry.write().unwrap().register(RegisterNodeRequest {
+        node_id: "L".to_string(),
+        address: leader_addr,
+        shard_id: 0,
+        role: NodeRole::Leader as i32,
+    });
+    registry.write().unwrap().register(RegisterNodeRequest {
+        node_id: "F".to_string(),
+        address: follower_addr,
+        shard_id: 0,
+        role: NodeRole::Follower as i32,
+    });
+
+    let mut client = start_coordinator(registry.clone()).await;
+
+    // Before failover the query is served by the leader.
+    let before = client
+        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(before.hits[0].document.as_ref().unwrap().icao24, "leaderdoc");
+
+    // The leader dies: the follower stays fresh, then the reaper reaps + promotes.
+    {
+        let mut reg = registry.write().unwrap();
+        let now = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+        reg.heartbeat("F", now);
+        reg.reap_dead(now, Duration::from_secs(30));
+        reg.promote_orphaned_shards();
+    }
+
+    // After failover the same query is now served by the promoted follower.
+    let after = client
+        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(after.shards_answered, 1);
+    assert_eq!(after.hits[0].document.as_ref().unwrap().icao24, "followerdoc");
+}
+
+#[tokio::test]
 async fn coordinator_returns_partial_results_when_a_shard_is_down() {
     // Shard 0 is live; shard 1's registered address isn't serving.
     let a0 = start_stub_shard(shard_reply("shard-0", 1, vec![hit("aaa", 1.0)])).await;
