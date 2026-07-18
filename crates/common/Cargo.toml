@@ -1,0 +1,17 @@
+[package]
+name = "common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared crate: the generated gRPC contract (from ../../proto) plus cross-cutting
+# domain logic that both the coordinator and shard nodes must agree on — starting with
+# the shard-key hashing, which MUST be identical everywhere or documents land on the
+# wrong shard.
+
+[dependencies]
+tonic.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true

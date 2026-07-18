@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/coordinator",
+    "crates/shard-node",
+]
+
+# Centralize versions here so every crate shares one source of truth.
+# Q1 dependency set is deliberately minimal: async runtime + gRPC only.
+# NO onnxruntime / HNSW / openraft — those are later quarters (see README roadmap).
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+tonic = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/parammadan/aether-engine"

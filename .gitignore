@@ -1,0 +1,41 @@
+# ---- Rust / Cargo ----
+/target
+**/target
+Cargo.lock.orig
+*.rs.bk
+*.pdb
+
+# ---- Secrets & credentials (NEVER commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*_rsa
+*_ed25519
+id_rsa*
+credentials
+credentials.json
+secrets.*
+.aws/
+.aws-credentials
+.hf_token
+huggingface_token*
+*.token
+service-account*.json
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- Local data / scratch (flight telemetry dumps, indexes) ----
+/data
+**/data
+*.log

@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+// Versioned package: `aether.v1`. Versioning the wire contract from day one means a
+// future breaking change becomes `aether.v2` served alongside v1, instead of a
+// flag-day upgrade across coordinator + every shard node. Cheap now, expensive to retrofit.
+package aether.v1;
+
+// =============================================================================
+// The document
+// =============================================================================
+
+// A single flight observation = one document. This is the unit we index, shard,
+// replicate, and search. The schema is locked in Q1 so we never re-plumb the wire
+// format later; fields for phases we haven't built yet (geo, embeddings) are present
+// but unused until their quarter.
+message FlightDocument {
+  // --- Identity ---
+  string icao24 = 1;       // 24-bit ICAO transponder address. THE SHARD KEY.
+  string callsign = 2;     // flight callsign, e.g. "UAL231". Primary keyword target.
+  int64 observed_at = 3;   // observation time, unix epoch millis.
+
+  // --- Spatial (used for geo pre-filter in a later phase, not Q1) ---
+  double latitude = 4;
+  double longitude = 5;
+  double altitude = 6;     // barometric altitude, meters.
+
+  // --- Embeddable text (ONNX embeds this in Q4, not Q1) ---
+  string origin = 7;       // origin airport / country.
+  string destination = 8;
+  string aircraft_type = 9;
+
+  // --- Metadata ---
+  double velocity = 10;
+  double heading = 11;
+  double vertical_rate = 12;
+  bool on_ground = 13;
+  string tenant_id = 14;   // multi-tenancy handle; carried now, enforced later.
+}
+
+// =============================================================================
+// Search  (data plane)
+// =============================================================================
+// In Q1 a client calls Search on a single shard node directly. In Q2 the coordinator
+// fans the SAME Search RPC out to every shard and merges the responses (scatter-gather).
+// Keeping one Search contract for both means the coordinator is just another caller —
+// no separate "internal" search API to maintain.
+
+message SearchRequest {
+  string query = 1;   // keyword query over the text fields (callsign, origin, ...).
+  uint32 limit = 2;   // max hits to return from THIS shard. 0 = server default.
+}
+
+message SearchHit {
+  FlightDocument document = 1;
+  double score = 2;   // relevance score from the inverted index; lets the coordinator
+                      // merge hits from many shards into one globally-ranked list.
+}
+
+message SearchResponse {
+  repeated SearchHit hits = 1;
+  uint64 total_matched = 2; // matches before `limit` was applied. Needed later for
+                            // correct cross-shard aggregation / "N of M results".
+  string shard_id = 3;      // which shard produced these hits. The coordinator needs
+                            // provenance to merge, de-duplicate, and report coverage.
+}
+
+// Served by every shard node.
+service ShardSearch {
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
+
+// =============================================================================
+// Node registration  (control plane)
+// =============================================================================
+// A shard node announces itself to the coordinator on startup. This is what makes the
+// cluster N-parameterized and dynamically discovered instead of a hardcoded node list:
+// the coordinator learns the topology at runtime from these registrations.
+// The RPC is defined now (contract-first); the coordinator that handles it is built in Q2.
+
+enum NodeRole {
+  NODE_ROLE_UNSPECIFIED = 0; // proto3 requires a 0 default; treat as "unknown".
+  NODE_ROLE_LEADER = 1;      // owns the authoritative copy of its shard.
+  NODE_ROLE_FOLLOWER = 2;    // replica; promoted to leader on failover (Q3).
+}
+
+message RegisterNodeRequest {
+  string node_id = 1;   // stable identity of this node across restarts.
+  string address = 2;   // host:port the coordinator will dial for Search.
+  uint32 shard_id = 3;  // which shard this node serves = hash(icao24) % N.
+  NodeRole role = 4;    // leader or follower replica.
+}
+
+message RegisterNodeResponse {
+  bool accepted = 1;
+  uint32 cluster_size = 2; // the coordinator's current view of N. Echoed back so nodes
+                           // never assume a fixed cluster size — N is always runtime state.
+  string message = 3;      // human-readable reason on rejection (e.g. duplicate node_id).
+}
+
+// Served by the coordinator.
+service Coordinator {
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+}

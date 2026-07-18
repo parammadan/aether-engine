@@ -1,0 +1,15 @@
+[package]
+name = "coordinator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Control plane: dynamic node discovery, sharding, scatter-gather query fan-out.
+# STUB in Q1 — the registration/fan-out logic is built in Q2. It depends on `common`
+# only so the workspace wiring is real and it shares the one gRPC contract.
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+tonic.workspace = true
+prost.workspace = true

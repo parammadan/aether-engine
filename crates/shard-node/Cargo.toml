@@ -1,0 +1,15 @@
+[package]
+name = "shard-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Data plane: holds a shard's inverted index and serves the `ShardSearch` gRPC service.
+# STUB in Q1 — the index + server come later this quarter (next sessions). Depends on
+# `common` for the shared contract and shard-key logic.
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+tonic.workspace = true
+prost.workspace = true
