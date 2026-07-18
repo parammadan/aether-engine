@@ -1,14 +1,14 @@
 //! The `ShardSearch` gRPC service: serves queries against this shard's inverted index.
 //!
-//! # Concurrency model (defensible, logged in DECISIONS ADR-0005)
+//! # Concurrency model
 //! The index is wrapped in `Arc<RwLock<InvertedIndex>>`:
 //!   - `Search` takes a **read** lock — many queries run concurrently.
-//!   - ingestion (a later Q1 step) takes a **write** lock to insert documents.
+//!   - ingestion takes a **write** lock to insert documents.
 //! We use `std::sync::RwLock`, not `tokio::sync::RwLock`, because the search is short,
 //! CPU-bound work done entirely synchronously inside the handler — we never hold the guard
 //! across an `.await`, which is the one thing that would make a std lock in async code
 //! dangerous. If searches ever get heavy we'd move them to `spawn_blocking`; for a small
-//! in-memory Q1 index this is the simpler, correct choice.
+//! small in-memory index this is the simpler, correct choice.
 
 use std::sync::{Arc, RwLock};
 
@@ -64,6 +64,9 @@ impl ShardSearch for ShardSearchService {
             hits,
             total_matched: results.total_matched as u64,
             shard_id: self.shard_id.clone(),
+            // Coverage fields are a coordinator-level concept; a single shard leaves them 0.
+            shards_queried: 0,
+            shards_answered: 0,
         }))
     }
 }

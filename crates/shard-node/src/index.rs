@@ -5,8 +5,8 @@
 //! contains the term plus how often. Searching a query means looking up each query term's
 //! postings and combining them — O(matching postings) instead of scanning every document.
 //!
-//! # Q1 scope and deliberate simplifications (defensible, logged in DECISIONS ADR-0004)
-//! - **Keyword only.** No embeddings / vector search — that's Q4. This indexes the text
+//! # Scope and deliberate simplifications
+//! - **Keyword only.** No embeddings / vector search yet. This indexes the text
 //!   fields (`callsign`, `origin`, `destination`, `aircraft_type`).
 //! - **Exact-term matching.** Tokens are whole alphanumeric runs, lowercased. A callsign
 //!   like `UAL231` is one token `ual231`; searching `ual` will NOT match it. Prefix /
@@ -15,7 +15,7 @@
 //! - **Term-frequency scoring.** A document's score is the sum of term frequencies of the
 //!   matching query terms (OR semantics: any term may match). Simple and defensible;
 //!   TF-IDF / BM25 (which down-weight common terms) is a deliberate later upgrade.
-//! - **In-memory, not persisted.** A shard's index lives in RAM for Q1.
+//! - **In-memory, not persisted.** A shard's index lives in RAM.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -50,7 +50,7 @@ pub struct SearchResults<'a> {
 /// The inverted index for one shard.
 pub struct InvertedIndex {
     /// `docs[doc_id]` is the stored document. We store the generated `FlightDocument`
-    /// (the wire type) directly in Q1 to avoid a premature parallel domain struct; if
+    /// (the wire type) directly for now to avoid a premature parallel domain struct; if
     /// storage and wire formats diverge later, introduce a domain type then.
     docs: Vec<FlightDocument>,
     /// `term -> postings`.

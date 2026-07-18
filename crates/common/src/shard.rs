@@ -49,8 +49,8 @@ pub fn fnv1a_64(key: &[u8]) -> u64 {
 ///
 /// Placement is `hash(icao24) % N`. This is plain modulo hashing: simple and perfectly
 /// balanced for a fixed N, at the cost of remapping most keys when N changes. That tradeoff
-/// is fine for Q1 (N is fixed at startup); live resizing without mass remapping is the
-/// Q6 rebalancing problem, where consistent hashing / a shard-migration protocol comes in.
+/// is fine while N is fixed at startup; live resizing without mass remapping is a separate
+/// rebalancing problem, where consistent hashing / a shard-migration protocol comes in.
 pub fn shard_for(icao24: &str, shard_count: NonZeroU32) -> u32 {
     let hash = fnv1a_64(icao24.as_bytes());
     (hash % shard_count.get() as u64) as u32
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn single_shard_collapses_to_zero() {
-        // With N=1 every document maps to shard 0 — the single-node Q1 case.
+        // With N=1 every document maps to shard 0 — the single-node case.
         assert_eq!(shard_for("deadbeef", n(1)), 0);
     }
 

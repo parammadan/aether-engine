@@ -20,7 +20,7 @@ pub struct NodeInfo {
 }
 
 /// The coordinator's shard map. One leader per shard (last registration wins, which also
-/// models a follower being promoted and re-registering as leader in Q3), plus any followers.
+/// models a follower being promoted and re-registering as leader on failover), plus followers.
 pub struct Registry {
     shard_count: u32,
     leaders: HashMap<u32, NodeInfo>,
@@ -87,7 +87,7 @@ impl Registry {
         }
     }
 
-    /// Leader addresses for query fan-out (scatter-gather, piece 2).
+    /// Leader addresses for query fan-out (scatter-gather).
     pub fn leader_addresses(&self) -> Vec<String> {
         self.leaders.values().map(|n| n.address.clone()).collect()
     }

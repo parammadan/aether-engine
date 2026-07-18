@@ -10,21 +10,21 @@ package aether.v1;
 // =============================================================================
 
 // A single flight observation = one document. This is the unit we index, shard,
-// replicate, and search. The schema is locked in Q1 so we never re-plumb the wire
+// replicate, and search. The schema is locked early so we never re-plumb the wire
 // format later; fields for phases we haven't built yet (geo, embeddings) are present
-// but unused until their quarter.
+// but unused for now.
 message FlightDocument {
   // --- Identity ---
   string icao24 = 1;       // 24-bit ICAO transponder address. THE SHARD KEY.
   string callsign = 2;     // flight callsign, e.g. "UAL231". Primary keyword target.
   int64 observed_at = 3;   // observation time, unix epoch millis.
 
-  // --- Spatial (used for geo pre-filter in a later phase, not Q1) ---
+  // --- Spatial (used for geo pre-filter in a later phase) ---
   double latitude = 4;
   double longitude = 5;
   double altitude = 6;     // barometric altitude, meters.
 
-  // --- Embeddable text (ONNX embeds this in Q4, not Q1) ---
+  // --- Embeddable text (embedded in a later phase) ---
   string origin = 7;       // origin airport / country.
   string destination = 8;
   string aircraft_type = 9;
@@ -40,7 +40,7 @@ message FlightDocument {
 // =============================================================================
 // Search  (data plane)
 // =============================================================================
-// In Q1 a client calls Search on a single shard node directly. In Q2 the coordinator
+// A client can call Search on a single shard node directly, and the coordinator
 // fans the SAME Search RPC out to every shard and merges the responses (scatter-gather).
 // Keeping one Search contract for both means the coordinator is just another caller —
 // no separate "internal" search API to maintain.
@@ -62,6 +62,12 @@ message SearchResponse {
                             // correct cross-shard aggregation / "N of M results".
   string shard_id = 3;      // which shard produced these hits. The coordinator needs
                             // provenance to merge, de-duplicate, and report coverage.
+
+  // Coverage, set by the coordinator on a merged response (0 on a single shard's reply):
+  // how many shard leaders were asked vs. how many answered. `answered < queried` means the
+  // results are partial (some shard was unreachable) rather than empty.
+  uint32 shards_queried = 4;
+  uint32 shards_answered = 5;
 }
 
 // Served by every shard node.
@@ -75,12 +81,12 @@ service ShardSearch {
 // A shard node announces itself to the coordinator on startup. This is what makes the
 // cluster N-parameterized and dynamically discovered instead of a hardcoded node list:
 // the coordinator learns the topology at runtime from these registrations.
-// The RPC is defined now (contract-first); the coordinator that handles it is built in Q2.
+// The RPC is defined contract-first; the coordinator handles it.
 
 enum NodeRole {
   NODE_ROLE_UNSPECIFIED = 0; // proto3 requires a 0 default; treat as "unknown".
   NODE_ROLE_LEADER = 1;      // owns the authoritative copy of its shard.
-  NODE_ROLE_FOLLOWER = 2;    // replica; promoted to leader on failover (Q3).
+  NODE_ROLE_FOLLOWER = 2;    // replica; promoted to leader on failover.
 }
 
 message RegisterNodeRequest {
@@ -100,4 +106,9 @@ message RegisterNodeResponse {
 // Served by the coordinator.
 service Coordinator {
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // Client-facing search entry point. The coordinator fans this out to every shard leader
+  // (the SAME ShardSearch.Search RPC), merges the per-shard hits into one ranked list, and
+  // reports coverage. This is scatter-gather.
+  rpc Search(SearchRequest) returns (SearchResponse);
 }

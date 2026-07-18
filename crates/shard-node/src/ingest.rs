@@ -1,6 +1,6 @@
 //! Ingestion: pull flight observations from a source and feed them into the index.
 //!
-//! # Shape (defensible, logged in DECISIONS ADR-0006)
+//! # Shape
 //! A **pull-based** producer/consumer with backpressure:
 //!   - a *producer* polls a [`FlightSource`] on an interval for a snapshot of documents;
 //!   - it hands each batch to a *consumer* over a **bounded** channel;

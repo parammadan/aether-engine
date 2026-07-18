@@ -1,7 +1,7 @@
-//! Aether coordinator (control plane) — Q2 registration server.
+//! Aether coordinator (control plane) server.
 //!
-//! Serves the `Coordinator.RegisterNode` RPC so shard nodes can register at runtime, and
-//! holds the N-parameterized shard map. Scatter-gather query fan-out is added next.
+//! Serves the `Coordinator.RegisterNode` and `Coordinator.Search` RPCs: shard nodes register
+//! at runtime into an N-parameterized shard map, and queries are fanned out across leaders.
 //!
 //! Config via env:
 //!   AETHER_COORDINATOR_ADDR   listen address   (default 127.0.0.1:50050)
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(RwLock::new(Registry::new(shard_count)));
     let service = CoordinatorService::new(registry);
 
-    println!("aether-coordinator serving RegisterNode on {addr}; cluster N={shard_count}");
+    println!("aether-coordinator serving RegisterNode + Search on {addr}; cluster N={shard_count}");
 
     Server::builder()
         .add_service(CoordinatorServer::new(service))

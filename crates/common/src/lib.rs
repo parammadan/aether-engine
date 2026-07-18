@@ -1,6 +1,6 @@
 //! Shared types and cross-cutting logic for the Aether cluster.
 //!
-//! Q1 contents (deliberately minimal — see the roadmap in the repo README):
+//! Contents:
 //!   - [`pb`]: the generated gRPC contract (messages + service stubs) from `proto/aether.proto`.
 //!   - [`shard`]: the shard-key hashing that maps a document's `icao24` to a shard.
 

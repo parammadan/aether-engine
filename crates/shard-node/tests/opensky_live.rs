@@ -28,8 +28,8 @@ async fn opensky_returns_flight_documents() {
     assert!(!sample.icao24.is_empty(), "every doc must have an icao24 (shard key)");
 }
 
-/// The whole Q1 done-condition, with live data: ingest one real OpenSky snapshot, then
-/// search it over gRPC on one node.
+/// Full end-to-end, with live data: ingest one real OpenSky snapshot, then search it over
+/// gRPC on one node.
 #[tokio::test]
 #[ignore = "hits the live OpenSky network"]
 async fn end_to_end_live_search_over_grpc() {

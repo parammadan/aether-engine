@@ -1,5 +1,5 @@
-//! Talking to the coordinator control plane. Q2 piece 1: register this node's shard on
-//! startup so the coordinator can discover it and route/fan-out to it.
+//! Talking to the coordinator control plane: register this node's shard on startup so the
+//! coordinator can discover it and route/fan-out to it.
 
 use std::time::Duration;
 

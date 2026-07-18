@@ -49,23 +49,32 @@ aether-engine/
 
 ## Status
 
-**Q1 complete (single node):** a shard node ingests live flight data from OpenSky into an
-in-memory inverted index and serves keyword search over gRPC — the `aether.v1` contract,
-shard-key hashing, the inverted index, the `ShardSearch` server, and the ingestion loop
-(pull-based, with backpressure). Verified end-to-end against live data (~13k flights).
+A single shard node ingests live flight data from OpenSky into an in-memory inverted index
+and serves keyword search over gRPC — the `aether.v1` contract, shard-key hashing, the
+inverted index, the `ShardSearch` server, and a pull-based ingestion loop with backpressure.
+Verified end-to-end against live data (~13k flights).
 
-**Q2 in progress — the spine.** The coordinator now serves dynamic node registration and
-holds an N-parameterized shard map; shard nodes register on startup and ingest only the
-documents they own (`hash(icao24) % N`). Next: scatter-gather query fan-out, then
-leader→follower replication.
+The coordinator serves dynamic node registration (holding an N-parameterized shard map) and
+scatter-gather search: it fans a query across all shard leaders concurrently, merges the
+hits into one ranked list, and reports coverage (partial results if a shard is down). Shard
+nodes register on startup and ingest only the documents they own (`hash(icao24) % N`).
 
-Run it:
+## Run
+
+A single node:
 
 ```bash
-# terminal 1 — start a node (ingests live OpenSky, serves on :50051)
-cargo run -p shard-node
-# terminal 2 — query it
-cargo run -p shard-node --example query -- united 5
+cargo run -p shard-node                                    # serves on 127.0.0.1:50051
+cargo run -p shard-node --example query -- united 5        # query it
+```
+
+A cluster (each in its own terminal):
+
+```bash
+AETHER_SHARD_COUNT=2 cargo run -p coordinator
+AETHER_SHARD_INDEX=0 AETHER_SHARD_COUNT=2 AETHER_SHARD_ADDR=127.0.0.1:50051 AETHER_COORDINATOR_ADDR=127.0.0.1:50050 cargo run -p shard-node
+AETHER_SHARD_INDEX=1 AETHER_SHARD_COUNT=2 AETHER_SHARD_ADDR=127.0.0.1:50052 AETHER_COORDINATOR_ADDR=127.0.0.1:50050 cargo run -p shard-node
+cargo run -p coordinator --example cluster_query -- united 5
 ```
 
 ## Build

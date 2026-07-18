@@ -1,17 +1,17 @@
-//! The `Coordinator` gRPC service. Piece 1 implements `RegisterNode`; scatter-gather
-//! `Search` is added in piece 2.
+//! The `Coordinator` gRPC service: node registration and scatter-gather search.
 
 use std::sync::{Arc, RwLock};
 
 use tonic::{Request, Response, Status};
 
 use common::pb::coordinator_server::Coordinator;
-use common::pb::{RegisterNodeRequest, RegisterNodeResponse};
+use common::pb::{RegisterNodeRequest, RegisterNodeResponse, SearchRequest, SearchResponse};
 
+use crate::fanout::{merge_search_responses, scatter_gather};
 use crate::registry::Registry;
 
 /// gRPC handler over a shared registry. The registry sits behind an `RwLock` because many
-/// nodes may register concurrently (writes) while future query fan-out reads the shard map.
+/// nodes may register concurrently (writes) while query fan-out reads the shard map.
 pub struct CoordinatorService {
     registry: Arc<RwLock<Registry>>,
 }
@@ -35,5 +35,31 @@ impl Coordinator for CoordinatorService {
             .map_err(|_| Status::internal("registry lock poisoned"))?;
         let resp = registry.register(req);
         Ok(Response::new(resp))
+    }
+
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let req = request.into_inner();
+        let limit = req.limit as usize;
+
+        // Snapshot the leader addresses and release the lock BEFORE any await — we must not
+        // hold the std RwLock guard across the network fan-out.
+        let leaders = {
+            let registry = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?;
+            registry.leader_addresses()
+        };
+        let shards_queried = leaders.len() as u32;
+
+        // Fan out concurrently, then merge. Missing shards produce partial (not failed)
+        // results — coverage is reported in the response.
+        let responses = scatter_gather(leaders, req).await;
+        let merged = merge_search_responses(responses, limit, shards_queried);
+
+        Ok(Response::new(merged))
     }
 }
