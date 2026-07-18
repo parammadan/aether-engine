@@ -24,7 +24,7 @@ use std::time::Duration;
 use common::pb::replication_server::ReplicationServer;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::NodeRole;
-use shard_node::cluster::register_with_coordinator;
+use shard_node::cluster::{register_with_coordinator, run_heartbeat};
 use shard_node::index::InvertedIndex;
 use shard_node::ingest::{run_ingestion, OpenSkySource, ShardAssignment};
 use shard_node::replication::{run_replication, ReplicationService};
@@ -57,6 +57,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(n) => println!("registered '{node_id}' as {role:?} of shard {shard_index} (cluster N={n})"),
             Err(e) => eprintln!("warning: could not register with coordinator at {coord_addr}: {e}"),
         }
+        // Keep proving we're alive so the coordinator doesn't reap us.
+        let hb_secs: u64 = env_or("AETHER_HEARTBEAT_SECS", 5);
+        tokio::spawn(run_heartbeat(
+            coord_addr.clone(),
+            node_id.clone(),
+            addr_str.clone(),
+            shard_index,
+            role,
+            Duration::from_secs(hb_secs),
+        ));
     }
 
     // A leader ingests and replicates; a follower only receives replication.

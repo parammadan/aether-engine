@@ -133,6 +133,17 @@ message ListReplicasResponse {
   repeated string addresses = 1; // follower addresses for the shard
 }
 
+// A node proves it's still alive by heartbeating. The coordinator drops nodes it hasn't
+// heard from within a timeout, so a dead node stops being routed to.
+message HeartbeatRequest {
+  string node_id = 1;
+}
+
+message HeartbeatResponse {
+  bool known = 1; // false => the coordinator doesn't know this node (e.g. it restarted);
+                  // the node should register again.
+}
+
 // Served by the coordinator.
 service Coordinator {
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
@@ -144,4 +155,7 @@ service Coordinator {
 
   // Followers of a shard, so a leader can discover where to replicate.
   rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse);
+
+  // Liveness: a node periodically proves it's alive; silent nodes are dropped.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }

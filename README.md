@@ -59,7 +59,8 @@ scatter-gather search: it fans a query across all shard leaders concurrently, me
 hits into one ranked list, and reports coverage (partial results if a shard is down). Shard
 nodes register on startup and ingest only the documents they own (`hash(icao24) % N`). A
 shard leader replicates each indexed batch to its follower(s), which hold the same slice of
-data and can be promoted to serve it if the leader fails.
+data and can be promoted to serve it if the leader fails. Nodes heartbeat the coordinator,
+which drops any node that goes silent so queries stop being routed to a dead one.
 
 ## Run
 

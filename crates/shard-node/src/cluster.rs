@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use common::pb::coordinator_client::CoordinatorClient;
-use common::pb::{NodeRole, RegisterNodeRequest};
+use common::pb::{HeartbeatRequest, NodeRole, RegisterNodeRequest};
 
 pub type ClusterError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -53,4 +53,35 @@ pub async fn register_with_coordinator(
         return Err(format!("coordinator rejected registration: {}", resp.message).into());
     }
     Ok(resp.cluster_size)
+}
+
+/// Periodically heartbeat the coordinator so it knows this node is alive. Runs forever; a
+/// failed heartbeat is logged and retried on the next tick (a transient coordinator blip
+/// must not take the node down). If the coordinator reports it doesn't know us (e.g. it
+/// restarted), re-register.
+pub async fn run_heartbeat(
+    coordinator_addr: String,
+    node_id: String,
+    address: String,
+    shard_id: u32,
+    role: NodeRole,
+    interval: Duration,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let Ok(mut client) = CoordinatorClient::connect(format!("http://{coordinator_addr}")).await
+        else {
+            continue; // coordinator unreachable this tick; try again next tick
+        };
+        match client.heartbeat(HeartbeatRequest { node_id: node_id.clone() }).await {
+            Ok(resp) => {
+                if !resp.into_inner().known {
+                    // Coordinator forgot us; re-register so it rebuilds our entry.
+                    let _ = register_with_coordinator(&coordinator_addr, &node_id, &address, shard_id, role).await;
+                }
+            }
+            Err(e) => eprintln!("heartbeat failed: {e}"),
+        }
+    }
 }

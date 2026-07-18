@@ -94,3 +94,25 @@ async fn list_replicas_returns_a_shards_followers() {
         .into_inner();
     assert!(empty.addresses.is_empty());
 }
+
+#[tokio::test]
+async fn heartbeat_reports_known_and_unknown_nodes() {
+    use common::pb::HeartbeatRequest;
+
+    let (mut client, _registry) = start(2).await;
+    client.register_node(req("n0", 0, NodeRole::Leader)).await.unwrap();
+
+    let known = client
+        .heartbeat(HeartbeatRequest { node_id: "n0".to_string() })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(known.known);
+
+    let unknown = client
+        .heartbeat(HeartbeatRequest { node_id: "ghost".to_string() })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!unknown.known);
+}

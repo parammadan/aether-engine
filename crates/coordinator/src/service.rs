@@ -6,8 +6,8 @@ use tonic::{Request, Response, Status};
 
 use common::pb::coordinator_server::Coordinator;
 use common::pb::{
-    ListReplicasRequest, ListReplicasResponse, RegisterNodeRequest, RegisterNodeResponse,
-    SearchRequest, SearchResponse,
+    HeartbeatRequest, HeartbeatResponse, ListReplicasRequest, ListReplicasResponse,
+    RegisterNodeRequest, RegisterNodeResponse, SearchRequest, SearchResponse,
 };
 
 use crate::fanout::{merge_search_responses, scatter_gather};
@@ -77,6 +77,20 @@ impl Coordinator for CoordinatorService {
             .map_err(|_| Status::internal("registry lock poisoned"))?;
         Ok(Response::new(ListReplicasResponse {
             addresses: registry.follower_addresses(shard_id),
+        }))
+    }
+
+    async fn heartbeat(
+        &self,
+        request: Request<HeartbeatRequest>,
+    ) -> Result<Response<HeartbeatResponse>, Status> {
+        let node_id = request.into_inner().node_id;
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        Ok(Response::new(HeartbeatResponse {
+            known: registry.heartbeat(&node_id),
         }))
     }
 }
