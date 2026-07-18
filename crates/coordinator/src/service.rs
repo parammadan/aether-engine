@@ -5,7 +5,10 @@ use std::sync::{Arc, RwLock};
 use tonic::{Request, Response, Status};
 
 use common::pb::coordinator_server::Coordinator;
-use common::pb::{RegisterNodeRequest, RegisterNodeResponse, SearchRequest, SearchResponse};
+use common::pb::{
+    ListReplicasRequest, ListReplicasResponse, RegisterNodeRequest, RegisterNodeResponse,
+    SearchRequest, SearchResponse,
+};
 
 use crate::fanout::{merge_search_responses, scatter_gather};
 use crate::registry::Registry;
@@ -61,5 +64,19 @@ impl Coordinator for CoordinatorService {
         let merged = merge_search_responses(responses, limit, shards_queried);
 
         Ok(Response::new(merged))
+    }
+
+    async fn list_replicas(
+        &self,
+        request: Request<ListReplicasRequest>,
+    ) -> Result<Response<ListReplicasResponse>, Status> {
+        let shard_id = request.into_inner().shard_id;
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        Ok(Response::new(ListReplicasResponse {
+            addresses: registry.follower_addresses(shard_id),
+        }))
     }
 }

@@ -53,6 +53,8 @@ pub trait FlightSource: Send + Sync {
 /// Run the ingestion loop: poll `source` every `poll_interval`, inserting each snapshot into
 /// `index`. When `shard` is `Some`, only documents this shard owns are indexed — so every
 /// node can pull the full OpenSky snapshot but keep only its `hash(icao24) % N` slice.
+/// When `replicate_tx` is `Some`, the documents actually indexed from each batch are also
+/// forwarded on that channel (a leader replicates them to its followers).
 /// Runs until `max_polls` is reached (`None` = forever, the production case); `max_polls`
 /// exists so tests can drive a deterministic, finite run.
 pub async fn run_ingestion<S: FlightSource + 'static>(
@@ -61,6 +63,7 @@ pub async fn run_ingestion<S: FlightSource + 'static>(
     poll_interval: Duration,
     max_polls: Option<usize>,
     shard: Option<ShardAssignment>,
+    replicate_tx: Option<tokio::sync::mpsc::Sender<Vec<FlightDocument>>>,
 ) {
     // Small bounded buffer: a few snapshots of slack, then backpressure kicks in.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<FlightDocument>>(4);
@@ -70,12 +73,25 @@ pub async fn run_ingestion<S: FlightSource + 'static>(
     let consumer_index = index.clone();
     let consumer = tokio::spawn(async move {
         while let Some(batch) = rx.recv().await {
-            let mut idx = consumer_index.write().expect("index lock poisoned");
-            for doc in batch {
-                // Keep only documents this shard owns (all of them when unsharded).
-                if shard.map_or(true, |assignment| assignment.owns(&doc.icao24)) {
-                    idx.insert(doc);
+            // Collect the documents we actually index (for replication), then insert them.
+            let mut indexed = Vec::new();
+            {
+                let mut idx = consumer_index.write().expect("index lock poisoned");
+                for doc in batch {
+                    // Keep only documents this shard owns (all of them when unsharded).
+                    if shard.map_or(true, |assignment| assignment.owns(&doc.icao24)) {
+                        if replicate_tx.is_some() {
+                            indexed.push(doc.clone());
+                        }
+                        idx.insert(doc);
+                    }
                 }
+            } // release the write lock before any await
+
+            if let Some(tx) = &replicate_tx {
+                // Forward what we indexed to the replication task. If it has gone away, keep
+                // ingesting — replication is best-effort and must not stall the data plane.
+                let _ = tx.send(indexed).await;
             }
         }
     });
@@ -263,7 +279,7 @@ mod tests {
         };
 
         // Two polls of a 2-doc batch -> 4 documents indexed. Zero interval for a fast test.
-        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2), None).await;
+        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2), None, None).await;
 
         let idx = index.read().unwrap();
         assert_eq!(idx.len(), 4);
@@ -285,7 +301,7 @@ mod tests {
         let index = Arc::new(RwLock::new(InvertedIndex::new()));
         let source = FakeSource { batch };
         let assignment = ShardAssignment { index: 0, count };
-        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(1), Some(assignment)).await;
+        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(1), Some(assignment), None).await;
 
         let idx = index.read().unwrap();
         assert_eq!(idx.len(), expected_shard0);
@@ -294,5 +310,25 @@ mod tests {
             let want = shard_for(id, count) == 0;
             assert_eq!(idx.search(id, 10).total_matched, if want { 1 } else { 0 });
         }
+    }
+
+    #[tokio::test]
+    async fn indexed_documents_are_forwarded_for_replication() {
+        let index = Arc::new(RwLock::new(InvertedIndex::new()));
+        let source = FakeSource { batch: vec![doc("a1", "UAL1"), doc("b2", "DAL2")] };
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<FlightDocument>>(8);
+        let collector = tokio::spawn(async move {
+            let mut all = Vec::new();
+            while let Some(batch) = rx.recv().await {
+                all.extend(batch);
+            }
+            all
+        });
+
+        run_ingestion(source, index, Duration::from_millis(0), Some(1), None, Some(tx)).await;
+
+        let forwarded = collector.await.unwrap();
+        assert_eq!(forwarded.len(), 2); // both indexed docs were forwarded to replication
     }
 }

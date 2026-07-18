@@ -76,6 +76,26 @@ service ShardSearch {
 }
 
 // =============================================================================
+// Replication  (data plane)
+// =============================================================================
+// A shard leader forwards the documents it indexes to its follower(s), so a follower holds
+// the same slice of data and can be promoted to serve it if the leader dies (primary-backup).
+
+message ReplicateRequest {
+  repeated FlightDocument documents = 1; // a batch the leader just indexed
+  uint32 shard_id = 2;                    // provenance: which shard these belong to
+}
+
+message ReplicateResponse {
+  uint32 applied = 1; // how many documents the follower applied
+}
+
+// Served by follower nodes; the leader is the client.
+service Replication {
+  rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
+}
+
+// =============================================================================
 // Node registration  (control plane)
 // =============================================================================
 // A shard node announces itself to the coordinator on startup. This is what makes the
@@ -103,6 +123,16 @@ message RegisterNodeResponse {
   string message = 3;      // human-readable reason on rejection (e.g. duplicate node_id).
 }
 
+// A leader asks the coordinator which followers serve its shard, so it knows where to
+// replicate. Discovery stays dynamic — the leader never hardcodes its replica addresses.
+message ListReplicasRequest {
+  uint32 shard_id = 1;
+}
+
+message ListReplicasResponse {
+  repeated string addresses = 1; // follower addresses for the shard
+}
+
 // Served by the coordinator.
 service Coordinator {
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
@@ -111,4 +141,7 @@ service Coordinator {
   // (the SAME ShardSearch.Search RPC), merges the per-shard hits into one ranked list, and
   // reports coverage. This is scatter-gather.
   rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Followers of a shard, so a leader can discover where to replicate.
+  rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse);
 }

@@ -66,3 +66,31 @@ async fn register_rejects_out_of_range_shard() {
     assert!(!resp.accepted);
     assert_eq!(resp.cluster_size, 2);
 }
+
+#[tokio::test]
+async fn list_replicas_returns_a_shards_followers() {
+    use common::pb::ListReplicasRequest;
+
+    let (mut client, _registry) = start(2).await;
+
+    // Shard 0 gets a leader and a follower; the leader should be able to discover the follower.
+    client.register_node(req("leader0", 0, NodeRole::Leader)).await.unwrap();
+    let mut follower = req("follower0", 0, NodeRole::Follower);
+    follower.address = "127.0.0.1:7000".to_string();
+    client.register_node(follower).await.unwrap();
+
+    let resp = client
+        .list_replicas(ListReplicasRequest { shard_id: 0 })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.addresses, vec!["127.0.0.1:7000".to_string()]);
+
+    // Shard 1 has no followers registered.
+    let empty = client
+        .list_replicas(ListReplicasRequest { shard_id: 1 })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(empty.addresses.is_empty());
+}

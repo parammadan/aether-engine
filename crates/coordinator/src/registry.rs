@@ -92,6 +92,14 @@ impl Registry {
         self.leaders.values().map(|n| n.address.clone()).collect()
     }
 
+    /// Follower addresses for a shard, so its leader knows where to replicate.
+    pub fn follower_addresses(&self, shard_id: u32) -> Vec<String> {
+        self.followers
+            .get(&shard_id)
+            .map(|nodes| nodes.iter().map(|n| n.address.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// How many distinct shards currently have a leader.
     pub fn leaders_registered(&self) -> usize {
         self.leaders.len()
@@ -170,5 +178,20 @@ mod tests {
         reg.register(req("leader", 0, NodeRole::Leader));
         reg.register(req("follower", 0, NodeRole::Follower));
         assert_eq!(reg.leaders_registered(), 1); // follower is not a leader
+    }
+
+    #[test]
+    fn follower_addresses_lists_only_that_shards_followers() {
+        let mut reg = Registry::new(2);
+        let mut f0 = req("f0", 0, NodeRole::Follower);
+        f0.address = "127.0.0.1:7000".to_string();
+        reg.register(f0);
+        let mut f1 = req("f1", 1, NodeRole::Follower);
+        f1.address = "127.0.0.1:7001".to_string();
+        reg.register(f1);
+
+        assert_eq!(reg.follower_addresses(0), vec!["127.0.0.1:7000".to_string()]);
+        assert_eq!(reg.follower_addresses(1), vec!["127.0.0.1:7001".to_string()]);
+        assert!(reg.follower_addresses(0).len() == 1);
     }
 }
