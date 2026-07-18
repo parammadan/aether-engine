@@ -1,17 +1,21 @@
 //! The `Coordinator` gRPC service: node registration and scatter-gather search.
 
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use tonic::{Request, Response, Status};
-
 use common::pb::coordinator_server::Coordinator;
+use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::{
     HeartbeatRequest, HeartbeatResponse, ListReplicasRequest, ListReplicasResponse,
-    RegisterNodeRequest, RegisterNodeResponse, SearchRequest, SearchResponse,
+    RegisterNodeRequest, RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate,
 };
+use tokio::task::JoinSet;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::Stream;
+use tonic::{Request, Response, Status};
 
-use crate::fanout::{merge_search_responses, scatter_gather};
+use crate::fanout::{merge_search_responses, scatter_gather, ProgressiveMerge};
 use crate::registry::Registry;
 
 /// gRPC handler over a shared registry. The registry sits behind an `RwLock` because many
@@ -28,6 +32,9 @@ impl CoordinatorService {
 
 #[tonic::async_trait]
 impl Coordinator for CoordinatorService {
+    type SearchStreamStream =
+        Pin<Box<dyn Stream<Item = Result<SearchUpdate, Status>> + Send + 'static>>;
+
     async fn register_node(
         &self,
         request: Request<RegisterNodeRequest>,
@@ -93,5 +100,53 @@ impl Coordinator for CoordinatorService {
         Ok(Response::new(HeartbeatResponse {
             known: registry.heartbeat(&node_id, Instant::now()),
         }))
+    }
+
+    async fn search_stream(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<Self::SearchStreamStream>, Status> {
+        let req = request.into_inner();
+        let limit = req.limit as usize;
+
+        // Snapshot leaders and release the lock before any await.
+        let leaders = {
+            let registry = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?;
+            registry.leader_addresses()
+        };
+        let shards_queried = leaders.len() as u32;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut merge = ProgressiveMerge::new(shards_queried, limit);
+
+            // Query every leader concurrently; fold + emit an update as each one reports.
+            let mut set = JoinSet::new();
+            for addr in leaders {
+                let query = req.clone();
+                set.spawn(async move {
+                    let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
+                    client.search(query).await.ok().map(|r| r.into_inner())
+                });
+            }
+
+            while let Some(joined) = set.join_next().await {
+                if let Ok(Some(resp)) = joined {
+                    merge.add(resp);
+                    // Client hung up — stop streaming.
+                    if tx.send(Ok(merge.snapshot(false))).await.is_err() {
+                        return;
+                    }
+                }
+            }
+
+            // Final update once every shard has reported (or failed).
+            let _ = tx.send(Ok(merge.snapshot(true))).await;
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 }

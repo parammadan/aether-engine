@@ -139,6 +139,72 @@ async fn coordinator_merges_results_across_shards() {
 }
 
 #[tokio::test]
+async fn search_stream_converges_across_shards_and_marks_complete() {
+    let a0 = start_stub_shard(shard_reply("shard-0", 2, vec![hit("aaa", 1.0), hit("bbb", 3.0)])).await;
+    let a1 = start_stub_shard(shard_reply("shard-1", 1, vec![hit("ccc", 2.0)])).await;
+
+    let registry = Arc::new(RwLock::new(Registry::new(2)));
+    register(&registry, 0, &a0);
+    register(&registry, 1, &a1);
+
+    let mut client = start_coordinator(registry).await;
+    let mut stream = client
+        .search_stream(SearchRequest { query: "x".to_string(), limit: 10 })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut updates = Vec::new();
+    while let Some(update) = stream.message().await.unwrap() {
+        updates.push(update);
+    }
+
+    // Progressive: at least one non-final update, then exactly one final.
+    assert!(updates.len() >= 2, "expected progressive updates, got {}", updates.len());
+    assert!(updates.iter().any(|u| !u.complete), "no intermediate update");
+    let last = updates.last().unwrap();
+    assert!(last.complete);
+    assert_eq!(last.shards_answered, 2);
+    assert_eq!(last.shards_queried, 2);
+    assert_eq!(last.total_matched, 3);
+    let order: Vec<&str> = last
+        .hits
+        .iter()
+        .map(|h| h.document.as_ref().unwrap().icao24.as_str())
+        .collect();
+    assert_eq!(order, vec!["bbb", "ccc", "aaa"]); // globally ranked once converged
+}
+
+#[tokio::test]
+async fn search_stream_completes_even_when_a_shard_dies_mid_aggregation() {
+    let a0 = start_stub_shard(shard_reply("shard-0", 1, vec![hit("aaa", 1.0)])).await;
+
+    let registry = Arc::new(RwLock::new(Registry::new(2)));
+    register(&registry, 0, &a0);
+    register(&registry, 1, "127.0.0.1:2"); // dead shard: its update never arrives
+
+    let mut client = start_coordinator(registry).await;
+    let mut stream = client
+        .search_stream(SearchRequest { query: "x".to_string(), limit: 10 })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut last = None;
+    while let Some(update) = stream.message().await.unwrap() {
+        last = Some(update);
+    }
+
+    // The stream still completes, converged on the surviving shard (partial coverage).
+    let last = last.unwrap();
+    assert!(last.complete);
+    assert_eq!(last.shards_answered, 1);
+    assert_eq!(last.shards_queried, 2);
+    assert_eq!(last.hits.len(), 1);
+    assert_eq!(last.hits[0].document.as_ref().unwrap().icao24, "aaa");
+}
+
+#[tokio::test]
 async fn failover_promotes_follower_and_queries_route_to_it() {
     use std::time::{Duration, Instant};
 

@@ -144,6 +144,17 @@ message HeartbeatResponse {
                   // the node should register again.
 }
 
+// A progressively-refined search result. The coordinator emits one of these each time
+// another shard reports, so a client watches results converge instead of waiting for the
+// slowest shard. Hits are the best-so-far, globally ranked.
+message SearchUpdate {
+  repeated SearchHit hits = 1;
+  uint64 total_matched = 2;   // running cluster-wide total of matches so far
+  uint32 shards_answered = 3; // shards that have reported so far
+  uint32 shards_queried = 4;  // total shards asked
+  bool complete = 5;          // true on the final update (all shards reported or timed out)
+}
+
 // Served by the coordinator.
 service Coordinator {
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
@@ -152,6 +163,11 @@ service Coordinator {
   // (the SAME ShardSearch.Search RPC), merges the per-shard hits into one ranked list, and
   // reports coverage. This is scatter-gather.
   rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Streaming scatter-gather: the coordinator streams a refined result each time a shard
+  // reports, so results materialize progressively (a shard dying mid-stream just means its
+  // update never arrives — the rest keep converging).
+  rpc SearchStream(SearchRequest) returns (stream SearchUpdate);
 
   // Followers of a shard, so a leader can discover where to replicate.
   rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse);

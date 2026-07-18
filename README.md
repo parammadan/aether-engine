@@ -64,6 +64,10 @@ which drops any node that goes silent and promotes a live follower to leader in 
 a shard whose leader dies keeps being served without interruption — verified by a test that
 kills a leader under continuous query load and asserts the query stream never breaks.
 
+Queries can also be **streamed**: `SearchStream` emits a refined result each time a shard
+reports, so results materialize progressively and keep converging even if a shard dies
+mid-aggregation.
+
 ## Run
 
 A single node:

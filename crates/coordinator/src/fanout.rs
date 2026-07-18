@@ -7,8 +7,16 @@
 use std::cmp::Ordering;
 
 use common::pb::shard_search_client::ShardSearchClient;
-use common::pb::{SearchRequest, SearchResponse};
+use common::pb::{SearchHit, SearchRequest, SearchResponse, SearchUpdate};
 use tokio::task::JoinSet;
+
+/// Global ranking of hits: score descending, ties broken by `icao24` for a stable order.
+fn cmp_hits(a: &SearchHit, b: &SearchHit) -> Ordering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| icao24_of(a).cmp(icao24_of(b)))
+}
 
 /// Merge per-shard responses into one response, ranked by score.
 ///
@@ -32,12 +40,7 @@ pub fn merge_search_responses(
         hits.append(&mut resp.hits);
     }
 
-    hits.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| icao24_of(a).cmp(icao24_of(b)))
-    });
+    hits.sort_by(cmp_hits);
 
     if limit != 0 && hits.len() > limit {
         hits.truncate(limit);
@@ -52,8 +55,54 @@ pub fn merge_search_responses(
     }
 }
 
-fn icao24_of(hit: &common::pb::SearchHit) -> &str {
+fn icao24_of(hit: &SearchHit) -> &str {
     hit.document.as_ref().map(|d| d.icao24.as_str()).unwrap_or("")
+}
+
+/// Incrementally merges shard responses as they stream in, maintaining the best-so-far
+/// top-`limit` hits. Each `add` folds in one shard; `snapshot` produces the current
+/// `SearchUpdate` for the client. Maintaining top-k incrementally is valid: a hit outside the
+/// current top-k can never re-enter as more shards arrive.
+pub struct ProgressiveMerge {
+    limit: usize,
+    hits: Vec<SearchHit>,
+    total_matched: u64,
+    shards_answered: u32,
+    shards_queried: u32,
+}
+
+impl ProgressiveMerge {
+    pub fn new(shards_queried: u32, limit: usize) -> Self {
+        Self {
+            limit,
+            hits: Vec::new(),
+            total_matched: 0,
+            shards_answered: 0,
+            shards_queried,
+        }
+    }
+
+    /// Fold one shard's response into the running result.
+    pub fn add(&mut self, resp: SearchResponse) {
+        self.shards_answered += 1;
+        self.total_matched += resp.total_matched;
+        self.hits.extend(resp.hits);
+        self.hits.sort_by(cmp_hits);
+        if self.limit != 0 && self.hits.len() > self.limit {
+            self.hits.truncate(self.limit);
+        }
+    }
+
+    /// The current progressive result. `complete` marks the final update.
+    pub fn snapshot(&self, complete: bool) -> SearchUpdate {
+        SearchUpdate {
+            hits: self.hits.clone(),
+            total_matched: self.total_matched,
+            shards_answered: self.shards_answered,
+            shards_queried: self.shards_queried,
+            complete,
+        }
+    }
 }
 
 /// Query every leader address concurrently and collect the responses that succeed. A leader
@@ -155,5 +204,38 @@ mod tests {
         assert_eq!(merged.total_matched, 0);
         assert_eq!(merged.shards_answered, 0);
         assert_eq!(merged.shards_queried, 3);
+    }
+
+    #[test]
+    fn progressive_merge_accumulates_and_ranks_as_shards_arrive() {
+        let mut merge = ProgressiveMerge::new(2, 10);
+
+        merge.add(shard_response("shard-0", 2, vec![hit("aaa", 1.0), hit("bbb", 3.0)]));
+        let first = merge.snapshot(false);
+        assert_eq!(first.shards_answered, 1);
+        assert!(!first.complete);
+
+        merge.add(shard_response("shard-1", 1, vec![hit("ccc", 2.0)]));
+        let last = merge.snapshot(true);
+        assert_eq!(last.shards_answered, 2);
+        assert_eq!(last.total_matched, 3);
+        assert!(last.complete);
+        let order: Vec<&str> = last
+            .hits
+            .iter()
+            .map(|h| h.document.as_ref().unwrap().icao24.as_str())
+            .collect();
+        assert_eq!(order, vec!["bbb", "ccc", "aaa"]);
+    }
+
+    #[test]
+    fn progressive_merge_maintains_top_k() {
+        let mut merge = ProgressiveMerge::new(2, 1);
+        merge.add(shard_response("shard-0", 5, vec![hit("aaa", 1.0)]));
+        merge.add(shard_response("shard-1", 5, vec![hit("bbb", 3.0)]));
+        let snap = merge.snapshot(true);
+        assert_eq!(snap.hits.len(), 1);
+        assert_eq!(snap.hits[0].document.as_ref().unwrap().icao24, "bbb"); // higher score wins
+        assert_eq!(snap.total_matched, 10); // total is cluster-wide, not limited
     }
 }
