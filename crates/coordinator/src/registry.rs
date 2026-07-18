@@ -22,6 +22,28 @@ pub struct NodeInfo {
     pub last_seen: Instant,
 }
 
+/// One node in a [`Registry::snapshot`]: its identity plus how stale its liveness is.
+#[derive(Clone, Debug)]
+pub struct NodeSnapshot {
+    pub node_id: String,
+    pub address: String,
+    pub role: NodeRole,
+    pub shard_id: u32,
+    pub since_seen: Duration,
+}
+
+impl NodeSnapshot {
+    fn from_info(info: &NodeInfo, shard_id: u32, now: Instant) -> Self {
+        Self {
+            node_id: info.node_id.clone(),
+            address: info.address.clone(),
+            role: info.role,
+            shard_id,
+            since_seen: now.saturating_duration_since(info.last_seen),
+        }
+    }
+}
+
 /// Default liveness window: how recently a node must have been seen for the registry to
 /// treat it as alive when guarding leader registrations. Kept in sync with the reaper's
 /// timeout by the binary's config.
@@ -218,6 +240,27 @@ impl Registry {
         }
 
         removed
+    }
+
+    /// A point-in-time view of every known node, for observability (dashboards/tooling).
+    pub fn snapshot(&self, now: Instant) -> Vec<NodeSnapshot> {
+        let mut nodes = Vec::new();
+        for (&shard_id, info) in &self.leaders {
+            nodes.push(NodeSnapshot::from_info(info, shard_id, now));
+        }
+        for (&shard_id, followers) in &self.followers {
+            for info in followers {
+                nodes.push(NodeSnapshot::from_info(info, shard_id, now));
+            }
+        }
+        // Stable order for consumers: by shard, leaders first, then node id.
+        nodes.sort_by(|a, b| {
+            a.shard_id
+                .cmp(&b.shard_id)
+                .then_with(|| (a.role != NodeRole::Leader).cmp(&(b.role != NodeRole::Leader)))
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
+        nodes
     }
 
     /// For any shard that has followers but no leader (its leader was reaped), promote one

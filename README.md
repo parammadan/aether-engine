@@ -77,6 +77,16 @@ select it with `AETHER_EMBEDDER=onnx AETHER_ONNX_MODEL_DIR=...`. Every node in a
 must use the same embedder: embeddings are a cross-node contract, and shards reject query
 vectors whose dimension doesn't match their own.
 
+## Live dashboard / chaos harness
+
+`cargo run -p dashboard` spawns a whole cluster (coordinator + a leader and follower per
+shard) as **real child processes** and serves a live UI at `http://127.0.0.1:8080`: node
+health per shard, a continuous query stream's throughput and coverage, and an event log.
+The **kill −9** button SIGKILLs the actual process — watch coverage degrade to partial,
+the follower get promoted (~6s), and coverage return, with zero failed queries. **Add
+follower** spawns a fresh node that registers and catches up from replication. Ctrl-C
+tears down every child.
+
 ## Run
 
 A single node:

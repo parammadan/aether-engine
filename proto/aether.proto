@@ -191,4 +191,23 @@ service Coordinator {
 
   // Liveness: a node periodically proves it's alive; silent nodes are dropped.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Observability: the coordinator's current view of the cluster (who leads/follows each
+  // shard and how recently each node was seen). Consumed by dashboards/tooling.
+  rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
+}
+
+message ClusterStateRequest {}
+
+message NodeState {
+  string node_id = 1;
+  string address = 2;
+  NodeRole role = 3;
+  uint32 shard_id = 4;
+  uint64 millis_since_seen = 5; // age of the last registration/heartbeat
+}
+
+message ClusterStateResponse {
+  uint32 shard_count = 1; // N
+  repeated NodeState nodes = 2;
 }

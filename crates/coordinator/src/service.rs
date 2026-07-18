@@ -7,8 +7,9 @@ use std::time::Instant;
 use common::pb::coordinator_server::Coordinator;
 use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::{
-    HeartbeatRequest, HeartbeatResponse, ListReplicasRequest, ListReplicasResponse,
-    RegisterNodeRequest, RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate,
+    ClusterStateRequest, ClusterStateResponse, HeartbeatRequest, HeartbeatResponse,
+    ListReplicasRequest, ListReplicasResponse, NodeState, RegisterNodeRequest,
+    RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate,
 };
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::ReceiverStream;
@@ -101,6 +102,31 @@ impl Coordinator for CoordinatorService {
         Ok(Response::new(HeartbeatResponse {
             known: role.is_some(),
             current_role: role.unwrap_or(common::pb::NodeRole::Unspecified) as i32,
+        }))
+    }
+
+    async fn get_cluster_state(
+        &self,
+        _request: Request<ClusterStateRequest>,
+    ) -> Result<Response<ClusterStateResponse>, Status> {
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        let nodes = registry
+            .snapshot(Instant::now())
+            .into_iter()
+            .map(|n| NodeState {
+                node_id: n.node_id,
+                address: n.address,
+                role: n.role as i32,
+                shard_id: n.shard_id,
+                millis_since_seen: n.since_seen.as_millis() as u64,
+            })
+            .collect();
+        Ok(Response::new(ClusterStateResponse {
+            shard_count: registry.shard_count(),
+            nodes,
         }))
     }
 

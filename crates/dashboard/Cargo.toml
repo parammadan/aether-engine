@@ -1,0 +1,18 @@
+[package]
+name = "dashboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Live cluster dashboard AND chaos harness in one: it spawns the coordinator and shard nodes
+# as real child processes, serves a browser UI over WebSocket showing node health and a live
+# query stream, and its kill button SIGKILLs an actual process — failover happens for real,
+# not simulated in-process.
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+tonic.workspace = true
+axum = { version = "0.7", features = ["ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
