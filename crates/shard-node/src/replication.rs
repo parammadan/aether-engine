@@ -12,16 +12,18 @@ use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 use tonic::{Request, Response, Status};
 
-use crate::index::InvertedIndex;
+use crate::store::ShardStore;
 
-/// Follower-side service: applies replicated documents into the local index.
+/// Follower-side service: applies replicated documents into the local store. Documents are
+/// re-embedded locally with the shared deterministic embedder, so the follower's vector
+/// index converges to the leader's without shipping vectors on the wire.
 pub struct ReplicationService {
-    index: Arc<RwLock<InvertedIndex>>,
+    store: Arc<RwLock<ShardStore>>,
 }
 
 impl ReplicationService {
-    pub fn new(index: Arc<RwLock<InvertedIndex>>) -> Self {
-        Self { index }
+    pub fn new(store: Arc<RwLock<ShardStore>>) -> Self {
+        Self { store }
     }
 }
 
@@ -34,12 +36,12 @@ impl Replication for ReplicationService {
         let documents = request.into_inner().documents;
         let applied = documents.len() as u32;
         {
-            let mut index = self
-                .index
+            let mut store = self
+                .store
                 .write()
-                .map_err(|_| Status::internal("index lock poisoned"))?;
+                .map_err(|_| Status::internal("store lock poisoned"))?;
             for doc in documents {
-                index.insert(doc);
+                store.insert(doc);
             }
         }
         Ok(Response::new(ReplicateResponse { applied }))
@@ -117,7 +119,7 @@ mod tests {
 
     #[tokio::test]
     async fn replicate_applies_documents_to_the_index() {
-        let index = Arc::new(RwLock::new(InvertedIndex::new()));
+        let index = Arc::new(RwLock::new(ShardStore::new()));
         let service = ReplicationService::new(index.clone());
 
         let resp = service

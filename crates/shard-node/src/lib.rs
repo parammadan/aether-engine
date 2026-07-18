@@ -12,3 +12,5 @@ pub mod index;
 pub mod ingest;
 pub mod replication;
 pub mod server;
+pub mod store;
+pub mod vector;

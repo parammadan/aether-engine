@@ -24,7 +24,7 @@ use serde::Deserialize;
 use common::pb::FlightDocument;
 use common::shard::shard_for;
 
-use crate::index::InvertedIndex;
+use crate::store::ShardStore;
 
 pub type IngestError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -59,7 +59,7 @@ pub trait FlightSource: Send + Sync {
 /// exists so tests can drive a deterministic, finite run.
 pub async fn run_ingestion<S: FlightSource + 'static>(
     source: S,
-    index: Arc<RwLock<InvertedIndex>>,
+    index: Arc<RwLock<ShardStore>>,
     poll_interval: Duration,
     max_polls: Option<usize>,
     shard: Option<ShardAssignment>,
@@ -273,17 +273,18 @@ mod tests {
 
     #[tokio::test]
     async fn ingestion_populates_index_from_source() {
-        let index = Arc::new(RwLock::new(InvertedIndex::new()));
+        let index = Arc::new(RwLock::new(ShardStore::new()));
         let source = FakeSource {
             batch: vec![doc("a1", "UAL1"), doc("b2", "DAL2")],
         };
 
-        // Two polls of a 2-doc batch -> 4 documents indexed. Zero interval for a fast test.
+        // Two polls of the same 2-aircraft snapshot: re-observations upsert, so the store
+        // holds 2 documents (one per aircraft), not 4.
         run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2), None, None).await;
 
         let idx = index.read().unwrap();
-        assert_eq!(idx.len(), 4);
-        assert_eq!(idx.search("ual1", 10).total_matched, 2); // one per poll
+        assert_eq!(idx.len(), 2);
+        assert_eq!(idx.search("ual1", 10).total_matched, 1); // one hit per aircraft, no dupes
     }
 
     #[tokio::test]
@@ -298,7 +299,7 @@ mod tests {
         let expected_shard0 = ids.iter().filter(|id| shard_for(id, count) == 0).count();
         assert!(expected_shard0 > 0 && expected_shard0 < ids.len(), "need a non-trivial split");
 
-        let index = Arc::new(RwLock::new(InvertedIndex::new()));
+        let index = Arc::new(RwLock::new(ShardStore::new()));
         let source = FakeSource { batch };
         let assignment = ShardAssignment { index: 0, count };
         run_ingestion(source, index.clone(), Duration::from_millis(0), Some(1), Some(assignment), None).await;
@@ -314,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn indexed_documents_are_forwarded_for_replication() {
-        let index = Arc::new(RwLock::new(InvertedIndex::new()));
+        let index = Arc::new(RwLock::new(ShardStore::new()));
         let source = FakeSource { batch: vec![doc("a1", "UAL1"), doc("b2", "DAL2")] };
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<FlightDocument>>(8);

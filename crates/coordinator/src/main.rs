@@ -30,7 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shard_count: u32 = env_or("AETHER_SHARD_COUNT", 3);
     let liveness_timeout = Duration::from_secs(env_or("AETHER_LIVENESS_TIMEOUT_SECS", 15));
 
-    let registry = Arc::new(RwLock::new(Registry::new(shard_count)));
+    // The registration guard and the reaper share one definition of "alive".
+    let registry = Arc::new(RwLock::new(
+        Registry::new(shard_count).with_liveness_timeout(liveness_timeout),
+    ));
 
     // Reaper: periodically drop nodes we haven't heard from within the liveness timeout, so a
     // dead node stops being routed to. Checks at roughly a third of the timeout.

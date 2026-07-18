@@ -70,9 +70,21 @@ message SearchResponse {
   uint32 shards_answered = 5;
 }
 
+// Vector (semantic) search. The caller embeds the query text ONCE and fans the resulting
+// vector out, so every shard scores against the same query point; shards never re-embed.
+message VectorSearchRequest {
+  repeated float vector = 1; // the embedded query, L2-normalized
+  uint32 limit = 2;          // max hits from THIS shard. 0 = server default.
+}
+
 // Served by every shard node.
 service ShardSearch {
   rpc Search(SearchRequest) returns (SearchResponse);
+
+  // k-nearest-neighbour search over the shard's vector index. Scores are cosine similarity,
+  // so results from many shards can be merged by the same score-descending rule as keyword
+  // search (SearchResponse is reused).
+  rpc VectorSearch(VectorSearchRequest) returns (SearchResponse);
 }
 
 // =============================================================================
@@ -142,6 +154,11 @@ message HeartbeatRequest {
 message HeartbeatResponse {
   bool known = 1; // false => the coordinator doesn't know this node (e.g. it restarted);
                   // the node should register again.
+  NodeRole current_role = 2; // the coordinator's current view of this node's role (set when
+                             // known). A node adopts this — e.g. a promoted follower learns
+                             // it is now the shard's leader — and re-registers with it, so a
+                             // coordinator restart can't demote a promoted node back to its
+                             // boot-time role.
 }
 
 // A progressively-refined search result. The coordinator emits one of these each time

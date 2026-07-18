@@ -97,8 +97,10 @@ impl Coordinator for CoordinatorService {
             .registry
             .write()
             .map_err(|_| Status::internal("registry lock poisoned"))?;
+        let role = registry.heartbeat(&node_id, Instant::now());
         Ok(Response::new(HeartbeatResponse {
-            known: registry.heartbeat(&node_id, Instant::now()),
+            known: role.is_some(),
+            current_role: role.unwrap_or(common::pb::NodeRole::Unspecified) as i32,
         }))
     }
 

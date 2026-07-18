@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::SearchRequest;
-use shard_node::index::InvertedIndex;
+use shard_node::store::ShardStore;
 use shard_node::ingest::{FlightSource, OpenSkySource};
 use shard_node::server::ShardSearchService;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -36,7 +36,7 @@ async fn end_to_end_live_search_over_grpc() {
     // 1. Ingest one live snapshot into the index.
     let docs = OpenSkySource::from_env().fetch().await.expect("OpenSky fetch failed");
     let total = docs.len();
-    let mut index = InvertedIndex::new();
+    let mut index = ShardStore::new();
     for doc in docs {
         index.insert(doc);
     }

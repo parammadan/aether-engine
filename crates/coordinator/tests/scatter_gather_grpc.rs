@@ -29,6 +29,13 @@ impl ShardSearch for StubShard {
     ) -> Result<Response<SearchResponse>, Status> {
         Ok(Response::new(self.response.clone()))
     }
+
+    async fn vector_search(
+        &self,
+        _request: Request<common::pb::VectorSearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        Ok(Response::new(self.response.clone()))
+    }
 }
 
 fn hit(icao24: &str, score: f64) -> SearchHit {

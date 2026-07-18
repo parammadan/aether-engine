@@ -25,7 +25,7 @@ use common::pb::replication_server::ReplicationServer;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::NodeRole;
 use shard_node::cluster::{register_with_coordinator, run_heartbeat};
-use shard_node::index::InvertedIndex;
+use shard_node::store::ShardStore;
 use shard_node::ingest::{run_ingestion, OpenSkySource, ShardAssignment};
 use shard_node::replication::{run_replication, ReplicationService};
 use shard_node::server::ShardSearchService;
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let coordinator = std::env::var("AETHER_COORDINATOR_ADDR").ok();
 
     let shard_id_label = format!("shard-{shard_index}");
-    let index = Arc::new(RwLock::new(InvertedIndex::new()));
+    let index = Arc::new(RwLock::new(ShardStore::new()));
 
     // Register with the coordinator if configured. A failure is logged but does NOT stop the
     // node from serving: the data plane keeps running even if the control plane is down.

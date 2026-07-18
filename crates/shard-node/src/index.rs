@@ -48,6 +48,12 @@ pub struct SearchResults<'a> {
 }
 
 /// The inverted index for one shard.
+///
+/// Inserts are **upserts keyed by `icao24`**: a document's identity is the aircraft, and each
+/// ingestion poll re-observes the same aircraft, so a repeat insert replaces the stored
+/// document in place (old postings removed, new ones added) instead of appending a duplicate.
+/// Without this, every poll would duplicate the whole fleet — duplicate hits in results and
+/// unbounded growth.
 pub struct InvertedIndex {
     /// `docs[doc_id]` is the stored document. We store the generated `FlightDocument`
     /// (the wire type) directly for now to avoid a premature parallel domain struct; if
@@ -55,6 +61,8 @@ pub struct InvertedIndex {
     docs: Vec<FlightDocument>,
     /// `term -> postings`.
     postings: HashMap<String, Vec<Posting>>,
+    /// `icao24 -> doc slot`, the upsert key.
+    by_key: HashMap<String, DocId>,
 }
 
 impl InvertedIndex {
@@ -62,10 +70,11 @@ impl InvertedIndex {
         Self {
             docs: Vec::new(),
             postings: HashMap::new(),
+            by_key: HashMap::new(),
         }
     }
 
-    /// Number of documents indexed.
+    /// Number of distinct documents (aircraft) indexed.
     pub fn len(&self) -> usize {
         self.docs.len()
     }
@@ -74,25 +83,60 @@ impl InvertedIndex {
         self.docs.is_empty()
     }
 
-    /// Index one document. Tokenizes its text fields, accumulates per-term frequencies for
-    /// this document, then appends a posting per distinct term.
-    pub fn insert(&mut self, doc: FlightDocument) {
-        let doc_id = self.docs.len() as DocId;
-
-        let mut term_freqs: HashMap<String, u32> = HashMap::new();
+    /// Per-term frequencies over the document's indexed text fields.
+    fn term_freqs(doc: &FlightDocument) -> HashMap<String, u32> {
+        let mut freqs: HashMap<String, u32> = HashMap::new();
         for field in [&doc.callsign, &doc.origin, &doc.destination, &doc.aircraft_type] {
             for token in tokenize(field) {
-                *term_freqs.entry(token).or_insert(0) += 1;
+                *freqs.entry(token).or_insert(0) += 1;
             }
         }
+        freqs
+    }
 
-        for (term, term_freq) in term_freqs {
+    fn add_postings(&mut self, doc_id: DocId, doc: &FlightDocument) {
+        for (term, term_freq) in Self::term_freqs(doc) {
             self.postings
                 .entry(term)
                 .or_default()
                 .push(Posting { doc_id, term_freq });
         }
+    }
 
+    /// Remove `doc_id`'s postings for every term of `doc`. Cheap in practice: a flight
+    /// document has a handful of short text fields, so this touches a few posting lists.
+    fn remove_postings(&mut self, doc_id: DocId, doc: &FlightDocument) {
+        for term in Self::term_freqs(doc).into_keys() {
+            if let Some(list) = self.postings.get_mut(&term) {
+                list.retain(|p| p.doc_id != doc_id);
+                if list.is_empty() {
+                    self.postings.remove(&term);
+                }
+            }
+        }
+    }
+
+    /// Upsert one document by `icao24`: a new aircraft appends; a re-observed aircraft
+    /// replaces its stored document in place (old postings out, new postings in).
+    pub fn insert(&mut self, doc: FlightDocument) {
+        if let Some(&doc_id) = self.by_key.get(&doc.icao24) {
+            let old = std::mem::replace(&mut self.docs[doc_id as usize], doc);
+            self.remove_postings(doc_id, &old);
+            // Frequencies are computed up front so the immutable borrow of the stored doc
+            // ends before we mutate the postings map.
+            let freqs = Self::term_freqs(&self.docs[doc_id as usize]);
+            for (term, term_freq) in freqs {
+                self.postings
+                    .entry(term)
+                    .or_default()
+                    .push(Posting { doc_id, term_freq });
+            }
+            return;
+        }
+
+        let doc_id = self.docs.len() as DocId;
+        self.by_key.insert(doc.icao24.clone(), doc_id);
+        self.add_postings(doc_id, &doc);
         self.docs.push(doc);
     }
 
@@ -236,5 +280,20 @@ mod tests {
         let r = idx.search("boeing", 1);
         assert_eq!(r.total_matched, 2); // both Boeings matched
         assert_eq!(r.hits.len(), 1); // but only one returned
+    }
+
+    #[test]
+    fn reinserting_an_aircraft_updates_in_place_instead_of_duplicating() {
+        let mut idx = InvertedIndex::new();
+        idx.insert(doc("a1", "UAL231", "SFO", "JFK", "Boeing 737"));
+        // The same aircraft re-observed with a changed callsign/route.
+        idx.insert(doc("a1", "UAL500", "SFO", "ORD", "Boeing 737"));
+
+        assert_eq!(idx.len(), 1); // still one document — not two
+        assert_eq!(idx.search("ual231", 10).total_matched, 0); // old text unfindable
+        assert_eq!(idx.search("ual500", 10).total_matched, 1); // new text findable
+        assert_eq!(idx.search("jfk", 10).total_matched, 0); // stale posting removed
+        // Shared terms still match exactly once (no ghost duplicate posting).
+        assert_eq!(idx.search("boeing", 10).total_matched, 1);
     }
 }

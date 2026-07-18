@@ -18,6 +18,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
+# Approximate nearest-neighbour index (pure Rust HNSW) for semantic search.
+hnsw_rs = "0.3"
 
 [dev-dependencies]
 # Adapts a bound TcpListener into a stream for tonic's serve_with_incoming, so the

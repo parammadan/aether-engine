@@ -22,10 +22,21 @@ pub struct NodeInfo {
     pub last_seen: Instant,
 }
 
-/// The coordinator's shard map. One leader per shard (last registration wins, which also
-/// models a follower being promoted and re-registering as leader on failover), plus followers.
+/// Default liveness window: how recently a node must have been seen for the registry to
+/// treat it as alive when guarding leader registrations. Kept in sync with the reaper's
+/// timeout by the binary's config.
+const DEFAULT_LIVENESS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The coordinator's shard map: one leader per shard plus its followers.
+///
+/// Leader registrations are guarded: a shard's live leader cannot be overwritten by a
+/// *different* node registering as leader (see [`Registry::register_at`]). This is a
+/// stopgap against a restarted stale leader evicting a promoted follower — NOT a
+/// split-brain solution; two nodes can still both believe they lead across a partition,
+/// and only consensus can rule that out.
 pub struct Registry {
     shard_count: u32,
+    liveness_timeout: Duration,
     leaders: HashMap<u32, NodeInfo>,
     followers: HashMap<u32, Vec<NodeInfo>>,
 }
@@ -35,9 +46,17 @@ impl Registry {
     pub fn new(shard_count: u32) -> Self {
         Self {
             shard_count,
+            liveness_timeout: DEFAULT_LIVENESS_TIMEOUT,
             leaders: HashMap::new(),
             followers: HashMap::new(),
         }
+    }
+
+    /// Override the liveness window used by the leader-registration guard (the binary passes
+    /// the same value the reaper uses, so "alive" means one thing everywhere).
+    pub fn with_liveness_timeout(mut self, timeout: Duration) -> Self {
+        self.liveness_timeout = timeout;
+        self
     }
 
     pub fn shard_count(&self) -> u32 {
@@ -47,6 +66,12 @@ impl Registry {
     /// Handle a node registration, updating the shard map. Returns the wire response
     /// (including current N so the node never assumes cluster size).
     pub fn register(&mut self, req: RegisterNodeRequest) -> RegisterNodeResponse {
+        self.register_at(req, Instant::now())
+    }
+
+    /// [`Registry::register`] with an injected clock, so the leader-liveness guard is
+    /// deterministic to test.
+    pub fn register_at(&mut self, req: RegisterNodeRequest, now: Instant) -> RegisterNodeResponse {
         // Reject a shard_id the cluster doesn't have — a misconfigured node must not silently
         // own a shard outside 0..N.
         if req.shard_id >= self.shard_count {
@@ -57,11 +82,32 @@ impl Registry {
         }
 
         let role = req.role(); // prost accessor: i32 field -> NodeRole enum
+
+        // STOPGAP guard, not consensus: a *different* node may not take over a shard whose
+        // current leader is still live (seen within the liveness window). This stops a
+        // restarted stale leader — with an empty, freshly-booted index — from evicting a
+        // promoted follower that holds the data. A stale incumbent may be replaced (that is
+        // failover-by-registration), and a node may always re-register as itself. What this
+        // cannot do is arbitrate a partition where two nodes both believe they lead; that is
+        // a consensus problem, deliberately out of scope here.
+        if role == NodeRole::Leader {
+            if let Some(current) = self.leaders.get(&req.shard_id) {
+                let current_is_live =
+                    now.saturating_duration_since(current.last_seen) <= self.liveness_timeout;
+                if current_is_live && current.node_id != req.node_id {
+                    return self.reject(format!(
+                        "shard {} already has a live leader '{}'; rejecting takeover by '{}'",
+                        req.shard_id, current.node_id, req.node_id
+                    ));
+                }
+            }
+        }
+
         let info = NodeInfo {
             node_id: req.node_id,
             address: req.address,
             role,
-            last_seen: Instant::now(),
+            last_seen: now,
         };
 
         match role {
@@ -120,25 +166,27 @@ impl Registry {
         self.leaders.len() as u32 == self.shard_count
     }
 
-    /// Refresh a node's liveness (called on heartbeat). Returns false if the node isn't known,
-    /// which tells the node to register again (e.g. after a coordinator restart). `now` is a
-    /// parameter so liveness/promotion are deterministic to test.
-    pub fn heartbeat(&mut self, node_id: &str, now: Instant) -> bool {
+    /// Refresh a node's liveness (called on heartbeat). Returns the coordinator's current
+    /// view of the node's role — `Some(role)` if known (so e.g. a promoted follower learns it
+    /// now leads), or `None` if unknown, which tells the node to register again (e.g. after a
+    /// coordinator restart). `now` is a parameter so liveness/promotion are deterministic to
+    /// test.
+    pub fn heartbeat(&mut self, node_id: &str, now: Instant) -> Option<NodeRole> {
         for node in self.leaders.values_mut() {
             if node.node_id == node_id {
                 node.last_seen = now;
-                return true;
+                return Some(NodeRole::Leader);
             }
         }
         for nodes in self.followers.values_mut() {
             for node in nodes.iter_mut() {
                 if node.node_id == node_id {
                     node.last_seen = now;
-                    return true;
+                    return Some(NodeRole::Follower);
                 }
             }
         }
-        false
+        None
     }
 
     /// Remove nodes we haven't heard from within `timeout` (as of `now`) and return them, so a
@@ -251,14 +299,37 @@ mod tests {
     }
 
     #[test]
-    fn re_registering_a_shard_leader_replaces_it() {
-        // Models failover: a promoted node re-registers as the shard's leader.
+    fn live_leader_cannot_be_overwritten_by_another_node() {
+        // Stopgap guard: a restarted stale leader (fresh empty index) must not evict the
+        // shard's live leader (e.g. a promoted follower that holds the data).
         let mut reg = Registry::new(1);
-        reg.register(req("old", 0, NodeRole::Leader));
-        let mut newer = req("new", 0, NodeRole::Leader);
-        newer.address = "127.0.0.1:9999".to_string();
-        reg.register(newer);
+        let t0 = Instant::now();
+        reg.register_at(req("incumbent", 0, NodeRole::Leader), t0);
+
+        // A different node claiming leadership while the incumbent is live -> rejected.
+        let resp = reg.register_at(req("usurper", 0, NodeRole::Leader), t0);
+        assert!(!resp.accepted);
         assert_eq!(reg.leaders_registered(), 1);
+        assert_eq!(reg.leader_addresses(), vec!["127.0.0.1:6000".to_string()]);
+    }
+
+    #[test]
+    fn stale_leader_can_be_replaced_and_self_reregistration_is_allowed() {
+        let mut reg = Registry::new(1);
+        let t0 = Instant::now();
+        reg.register_at(req("incumbent", 0, NodeRole::Leader), t0);
+
+        // The same node may always re-register as itself (heartbeat-recovery path).
+        let same = reg.register_at(req("incumbent", 0, NodeRole::Leader), t0);
+        assert!(same.accepted);
+
+        // Once the incumbent is stale (unseen past the liveness window), another node may
+        // take over — failover-by-registration.
+        let later = t0.checked_add(Duration::from_secs(60)).unwrap();
+        let mut takeover = req("successor", 0, NodeRole::Leader);
+        takeover.address = "127.0.0.1:9999".to_string();
+        let resp = reg.register_at(takeover, later);
+        assert!(resp.accepted);
         assert_eq!(reg.leader_addresses(), vec!["127.0.0.1:9999".to_string()]);
     }
 
@@ -294,8 +365,8 @@ mod tests {
         reg.register(req("l0", 0, NodeRole::Leader));
 
         let now = Instant::now();
-        assert!(reg.heartbeat("l0", now)); // known
-        assert!(!reg.heartbeat("ghost", now)); // unknown -> should re-register
+        assert_eq!(reg.heartbeat("l0", now), Some(NodeRole::Leader)); // known, with current role
+        assert_eq!(reg.heartbeat("ghost", now), None); // unknown -> should re-register
 
         // A reap a moment after the heartbeat leaves it alive.
         let soon = now.checked_add(Duration::from_secs(1)).unwrap();
@@ -328,6 +399,10 @@ mod tests {
         assert!(reg.all_shards_have_leader());
         assert_eq!(reg.leader_addresses(), vec!["127.0.0.1:7000".to_string()]);
         assert!(reg.follower_addresses(0).is_empty()); // the follower became the leader
+
+        // The promoted node's next heartbeat tells it about its new role, so it re-registers
+        // as leader (not its boot-time role) if the coordinator ever restarts.
+        assert_eq!(reg.heartbeat("follower", now), Some(NodeRole::Leader));
     }
 
     #[test]

@@ -4,11 +4,12 @@
 
 use std::sync::{Arc, RwLock};
 
+use common::embed::{Embedder, HashEmbedder};
 use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::shard_search_server::ShardSearchServer;
-use common::pb::{FlightDocument, SearchRequest};
-use shard_node::index::InvertedIndex;
+use common::pb::{FlightDocument, SearchRequest, VectorSearchRequest};
 use shard_node::server::ShardSearchService;
+use shard_node::store::ShardStore;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -25,7 +26,7 @@ fn doc(icao24: &str, callsign: &str, origin: &str, destination: &str, aircraft: 
 
 /// Boots the server on 127.0.0.1:<ephemeral> and returns a connected client.
 async fn start_server_and_client() -> ShardSearchClient<tonic::transport::Channel> {
-    let mut index = InvertedIndex::new();
+    let mut index = ShardStore::new();
     index.insert(doc("a1b2c3", "UAL231", "SFO", "JFK", "Boeing 737"));
     index.insert(doc("d4e5f6", "DAL45", "ATL", "LAX", "Airbus A320"));
     index.insert(doc("aa11bb", "UAL900", "ORD", "SFO", "Boeing 777"));
@@ -104,4 +105,35 @@ async fn search_with_no_match_is_empty() {
 
     assert_eq!(resp.total_matched, 0);
     assert!(resp.hits.is_empty());
+}
+
+#[tokio::test]
+async fn vector_search_over_grpc_ranks_semantically_closest_first() {
+    let mut client = start_server_and_client().await;
+
+    // Embed the query ONCE at the caller (the coordinator's job in a cluster) and send the
+    // vector; a query overlapping the Boeing/UAL docs should rank one of them first.
+    let query = HashEmbedder.embed("UAL231 Boeing SFO");
+    let resp = client
+        .vector_search(VectorSearchRequest { vector: query, limit: 3 })
+        .await
+        .expect("vector search RPC failed")
+        .into_inner();
+
+    assert_eq!(resp.shard_id, "shard-test");
+    assert_eq!(resp.hits.len(), 3);
+    assert_eq!(resp.hits[0].document.as_ref().unwrap().icao24, "a1b2c3"); // UAL231/Boeing/SFO doc
+    // Best-first by cosine similarity.
+    assert!(resp.hits[0].score >= resp.hits[1].score);
+}
+
+#[tokio::test]
+async fn vector_search_rejects_wrong_dimension() {
+    let mut client = start_server_and_client().await;
+
+    let err = client
+        .vector_search(VectorSearchRequest { vector: vec![0.5; 7], limit: 3 })
+        .await
+        .expect_err("a 7-dim vector must be rejected");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }

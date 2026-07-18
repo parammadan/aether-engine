@@ -7,7 +7,7 @@ use common::pb::replication_server::ReplicationServer;
 use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::{FlightDocument, SearchRequest};
-use shard_node::index::InvertedIndex;
+use shard_node::store::ShardStore;
 use shard_node::replication::{replicate_to_followers, ReplicationService};
 use shard_node::server::ShardSearchService;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -19,7 +19,7 @@ fn doc(icao24: &str, callsign: &str) -> FlightDocument {
 
 /// Start a follower node (serves both ShardSearch and Replication over one address).
 async fn start_follower() -> String {
-    let index = Arc::new(RwLock::new(InvertedIndex::new()));
+    let index = Arc::new(RwLock::new(ShardStore::new()));
     let search = ShardSearchService::new(index.clone(), "shard-0".to_string());
     let replication = ReplicationService::new(index);
 

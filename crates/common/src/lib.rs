@@ -3,6 +3,8 @@
 //! Contents:
 //!   - [`pb`]: the generated gRPC contract (messages + service stubs) from `proto/aether.proto`.
 //!   - [`shard`]: the shard-key hashing that maps a document's `icao24` to a shard.
+//!   - [`embed`]: deterministic text embedding shared by every node (queries and replicas
+//!     must live in the same vector space).
 
 /// The generated protobuf/gRPC code for package `aether.v1`.
 ///
@@ -13,4 +15,5 @@ pub mod pb {
     tonic::include_proto!("aether.v1");
 }
 
+pub mod embed;
 pub mod shard;

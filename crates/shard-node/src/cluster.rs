@@ -57,16 +57,23 @@ pub async fn register_with_coordinator(
 
 /// Periodically heartbeat the coordinator so it knows this node is alive. Runs forever; a
 /// failed heartbeat is logged and retried on the next tick (a transient coordinator blip
-/// must not take the node down). If the coordinator reports it doesn't know us (e.g. it
-/// restarted), re-register.
+/// must not take the node down).
+///
+/// The node tracks its *current* role, seeded from `initial_role` but updated from every
+/// heartbeat response: if the coordinator promoted this node (follower -> leader on
+/// failover), the next heartbeat teaches it. When the coordinator reports the node unknown
+/// (e.g. the coordinator restarted and lost its shard map), the node re-registers with the
+/// TRACKED role — not the boot-time one — so a restart can't silently demote a promoted
+/// leader back to follower.
 pub async fn run_heartbeat(
     coordinator_addr: String,
     node_id: String,
     address: String,
     shard_id: u32,
-    role: NodeRole,
+    initial_role: NodeRole,
     interval: Duration,
 ) {
+    let mut current_role = initial_role;
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -76,9 +83,29 @@ pub async fn run_heartbeat(
         };
         match client.heartbeat(HeartbeatRequest { node_id: node_id.clone() }).await {
             Ok(resp) => {
-                if !resp.into_inner().known {
-                    // Coordinator forgot us; re-register so it rebuilds our entry.
-                    let _ = register_with_coordinator(&coordinator_addr, &node_id, &address, shard_id, role).await;
+                let resp = resp.into_inner();
+                if resp.known {
+                    // Adopt the coordinator's view of our role (ignore Unspecified).
+                    match resp.current_role() {
+                        NodeRole::Unspecified => {}
+                        role => {
+                            if role != current_role {
+                                println!("node '{node_id}': role is now {role:?} (was {current_role:?})");
+                            }
+                            current_role = role;
+                        }
+                    }
+                } else {
+                    // Coordinator forgot us; re-register with who we ARE now, not who we
+                    // were at boot.
+                    let _ = register_with_coordinator(
+                        &coordinator_addr,
+                        &node_id,
+                        &address,
+                        shard_id,
+                        current_role,
+                    )
+                    .await;
                 }
             }
             Err(e) => eprintln!("heartbeat failed: {e}"),
