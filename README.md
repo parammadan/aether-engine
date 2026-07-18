@@ -54,8 +54,10 @@ in-memory inverted index and serves keyword search over gRPC — the `aether.v1`
 shard-key hashing, the inverted index, the `ShardSearch` server, and the ingestion loop
 (pull-based, with backpressure). Verified end-to-end against live data (~13k flights).
 
-Next: **Q2 — the spine** (N-parameterized coordinator, `hash(icao24) % N` sharding,
-scatter-gather, leader→follower replication). The coordinator is currently a stub.
+**Q2 in progress — the spine.** The coordinator now serves dynamic node registration and
+holds an N-parameterized shard map; shard nodes register on startup and ingest only the
+documents they own (`hash(icao24) % N`). Next: scatter-gather query fan-out, then
+leader→follower replication.
 
 Run it:
 

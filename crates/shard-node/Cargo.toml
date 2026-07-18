@@ -23,3 +23,5 @@ async-trait = "0.1"
 # Adapts a bound TcpListener into a stream for tonic's serve_with_incoming, so the
 # integration test can grab an ephemeral port instead of racing on a fixed one.
 tokio-stream = { version = "0.1", features = ["net"] }
+# Dev-only: run a real coordinator in-process to test the registration client end-to-end.
+coordinator = { path = "../coordinator" }

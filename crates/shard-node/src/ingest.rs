@@ -14,6 +14,7 @@
 //! The [`FlightSource`] trait keeps the loop testable with a fake in-memory source — no live
 //! network needed for unit tests. [`OpenSkySource`] is the real implementation.
 
+use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -21,10 +22,27 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use common::pb::FlightDocument;
+use common::shard::shard_for;
 
 use crate::index::InvertedIndex;
 
 pub type IngestError = Box<dyn std::error::Error + Send + Sync>;
+
+/// This node's shard ownership: it indexes a document only if `hash(icao24) % count == index`.
+/// Passing `None` to [`run_ingestion`] disables filtering (single-node / index everything).
+#[derive(Clone, Copy, Debug)]
+pub struct ShardAssignment {
+    pub index: u32,
+    pub count: NonZeroU32,
+}
+
+impl ShardAssignment {
+    /// Does this shard own the given aircraft? Uses the same `shard_for` the coordinator and
+    /// every other node use, so ownership is consistent cluster-wide.
+    pub fn owns(&self, icao24: &str) -> bool {
+        shard_for(icao24, self.count) == self.index
+    }
+}
 
 /// A source of flight observations. One `fetch` returns one snapshot (a batch of documents).
 #[async_trait]
@@ -33,13 +51,16 @@ pub trait FlightSource: Send + Sync {
 }
 
 /// Run the ingestion loop: poll `source` every `poll_interval`, inserting each snapshot into
-/// `index`. Runs until `max_polls` is reached (`None` = forever, the production case).
-/// `max_polls` exists so tests can drive a deterministic, finite run.
+/// `index`. When `shard` is `Some`, only documents this shard owns are indexed — so every
+/// node can pull the full OpenSky snapshot but keep only its `hash(icao24) % N` slice.
+/// Runs until `max_polls` is reached (`None` = forever, the production case); `max_polls`
+/// exists so tests can drive a deterministic, finite run.
 pub async fn run_ingestion<S: FlightSource + 'static>(
     source: S,
     index: Arc<RwLock<InvertedIndex>>,
     poll_interval: Duration,
     max_polls: Option<usize>,
+    shard: Option<ShardAssignment>,
 ) {
     // Small bounded buffer: a few snapshots of slack, then backpressure kicks in.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<FlightDocument>>(4);
@@ -51,7 +72,10 @@ pub async fn run_ingestion<S: FlightSource + 'static>(
         while let Some(batch) = rx.recv().await {
             let mut idx = consumer_index.write().expect("index lock poisoned");
             for doc in batch {
-                idx.insert(doc);
+                // Keep only documents this shard owns (all of them when unsharded).
+                if shard.map_or(true, |assignment| assignment.owns(&doc.icao24)) {
+                    idx.insert(doc);
+                }
             }
         }
     });
@@ -239,10 +263,36 @@ mod tests {
         };
 
         // Two polls of a 2-doc batch -> 4 documents indexed. Zero interval for a fast test.
-        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2)).await;
+        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2), None).await;
 
         let idx = index.read().unwrap();
         assert_eq!(idx.len(), 4);
         assert_eq!(idx.search("ual1", 10).total_matched, 2); // one per poll
+    }
+
+    #[tokio::test]
+    async fn ingestion_keeps_only_owned_shard() {
+        // With N=2, a shard-0 node must index only documents whose hash(icao24) % 2 == 0.
+        // Use enough ids that both shards are non-empty regardless of the exact hash split.
+        let count = NonZeroU32::new(2).unwrap();
+        let ids: Vec<String> = (0..20u32).map(|i| format!("{i:04x}")).collect();
+        // callsign = id so each indexed doc is searchable by its id (the index covers text
+        // fields, not icao24 itself).
+        let batch: Vec<FlightDocument> = ids.iter().map(|id| doc(id, id)).collect();
+        let expected_shard0 = ids.iter().filter(|id| shard_for(id, count) == 0).count();
+        assert!(expected_shard0 > 0 && expected_shard0 < ids.len(), "need a non-trivial split");
+
+        let index = Arc::new(RwLock::new(InvertedIndex::new()));
+        let source = FakeSource { batch };
+        let assignment = ShardAssignment { index: 0, count };
+        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(1), Some(assignment)).await;
+
+        let idx = index.read().unwrap();
+        assert_eq!(idx.len(), expected_shard0);
+        // Every indexed doc really is owned by shard 0.
+        for id in &ids {
+            let want = shard_for(id, count) == 0;
+            assert_eq!(idx.search(id, 10).total_matched, if want { 1 } else { 0 });
+        }
     }
 }

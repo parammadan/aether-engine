@@ -13,3 +13,7 @@ common = { path = "../common" }
 tokio.workspace = true
 tonic.workspace = true
 prost.workspace = true
+
+[dev-dependencies]
+# Ephemeral-port server binding for the registration integration test.
+tokio-stream = { version = "0.1", features = ["net"] }
