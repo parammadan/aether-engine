@@ -61,7 +61,8 @@ nodes register on startup and ingest only the documents they own (`hash(icao24) 
 shard leader replicates each indexed batch to its follower(s), which hold the same slice of
 data and can be promoted to serve it if the leader fails. Nodes heartbeat the coordinator,
 which drops any node that goes silent and promotes a live follower to leader in its place, so
-a shard whose leader dies keeps being served without interruption.
+a shard whose leader dies keeps being served without interruption — verified by a test that
+kills a leader under continuous query load and asserts the query stream never breaks.
 
 ## Run
 

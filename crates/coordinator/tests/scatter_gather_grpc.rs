@@ -65,6 +65,20 @@ async fn start_stub_shard(response: SearchResponse) -> String {
     .await
 }
 
+/// Like `start_stub_shard`, but returns the server task handle so the test can "kill" the
+/// node by aborting it (closing its listener).
+async fn start_killable_shard(response: SearchResponse) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let handle = tokio::spawn(async move {
+        let _ = Server::builder()
+            .add_service(ShardSearchServer::new(StubShard { response }))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await;
+    });
+    (addr, handle)
+}
+
 async fn start_coordinator(registry: Arc<RwLock<Registry>>) -> CoordinatorClient<tonic::transport::Channel> {
     let service = CoordinatorService::new(registry);
     let addr = spawn_on_ephemeral(|listener| {
@@ -173,6 +187,88 @@ async fn failover_promotes_follower_and_queries_route_to_it() {
         .into_inner();
     assert_eq!(after.shards_answered, 1);
     assert_eq!(after.hits[0].document.as_ref().unwrap().icao24, "followerdoc");
+}
+
+#[tokio::test]
+async fn queries_keep_flowing_when_a_leader_is_killed_under_load() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    // Shard 0: a killable leader and a follower, with distinguishable data.
+    let (leader_addr, leader_handle) =
+        start_killable_shard(shard_reply("shard-0", 1, vec![hit("leaderdoc", 1.0)])).await;
+    let follower_addr = start_stub_shard(shard_reply("shard-0", 1, vec![hit("followerdoc", 1.0)])).await;
+
+    let registry = Arc::new(RwLock::new(Registry::new(1)));
+    register(&registry, 0, &leader_addr);
+    registry.write().unwrap().register(RegisterNodeRequest {
+        node_id: "F".to_string(),
+        address: follower_addr,
+        shard_id: 0,
+        role: NodeRole::Follower as i32,
+    });
+
+    let client = start_coordinator(registry.clone()).await;
+
+    // A background load generator hammering the coordinator with queries.
+    let outcomes: Arc<Mutex<Vec<Result<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let load = tokio::spawn({
+        let outcomes = outcomes.clone();
+        let stop = stop.clone();
+        let mut client = client.clone();
+        async move {
+            while !stop.load(Ordering::Relaxed) {
+                let outcome = match client.search(SearchRequest { query: "x".to_string(), limit: 10 }).await {
+                    Ok(resp) => Ok(resp
+                        .into_inner()
+                        .hits
+                        .first()
+                        .map(|h| h.document.as_ref().unwrap().icao24.clone())
+                        .unwrap_or_else(|| "EMPTY".to_string())),
+                    Err(status) => Err(status.to_string()),
+                };
+                outcomes.lock().unwrap().push(outcome);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    });
+
+    // Serve from the leader for a bit.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // KILL the leader mid-load, and let the coordinator's failover run (reap + promote).
+    leader_handle.abort();
+    {
+        let mut reg = registry.write().unwrap();
+        let now = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+        reg.heartbeat("F", now); // follower is alive
+        reg.reap_dead(now, Duration::from_secs(30)); // dead leader dropped
+        reg.promote_orphaned_shards(); // follower promoted
+    }
+
+    // Keep serving from the promoted follower for a bit, then stop the load.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    stop.store(true, Ordering::Relaxed);
+    load.await.unwrap();
+
+    let outcomes = outcomes.lock().unwrap();
+    assert!(outcomes.len() > 10, "load generator barely ran ({} queries)", outcomes.len());
+
+    // The query stream never stopped: not a single RPC failed, even across the kill.
+    let errors: Vec<_> = outcomes.iter().filter_map(|o| o.as_ref().err()).collect();
+    assert!(errors.is_empty(), "a query failed at the RPC level: {errors:?}");
+
+    // We served from the leader before the kill and from the promoted follower after it.
+    assert!(
+        outcomes.iter().any(|o| matches!(o, Ok(w) if w == "leaderdoc")),
+        "never saw the leader answer"
+    );
+    assert!(
+        outcomes.iter().any(|o| matches!(o, Ok(w) if w == "followerdoc")),
+        "never failed over to the follower"
+    );
 }
 
 #[tokio::test]
