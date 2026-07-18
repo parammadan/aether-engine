@@ -10,6 +10,7 @@
 pub mod cluster;
 pub mod index;
 pub mod ingest;
+pub mod raft;
 pub mod replication;
 pub mod server;
 pub mod store;

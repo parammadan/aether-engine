@@ -77,6 +77,18 @@ select it with `AETHER_EMBEDDER=onnx AETHER_ONNX_MODEL_DIR=...`. Every node in a
 must use the same embedder: embeddings are a cross-node contract, and shards reject query
 vectors whose dimension doesn't match their own.
 
+## Consensus (in progress)
+
+Shard groups are gaining real consensus via [`openraft`](https://github.com/databendlabs/openraft):
+the members serving one shard form a raft group whose replicated log is the document
+stream, with the shard's store as the state machine — leader election, quorum-committed
+writes, and split-brain handling by construction (a raft-managed shard runs 3+ members,
+since a group of 2 cannot survive a failure). The foundation is in (`shard-node/src/raft/`:
+in-memory log storage, store-backed state machine, gRPC transport carrying the raft
+protocol) and verified by a test that elects a leader over real gRPC, quorum-replicates
+searchable writes to all members, kills the leader, and keeps writing under the new one.
+Wiring it into ingestion and coordinator routing is next.
+
 ## Live dashboard / chaos harness
 
 `cargo run -p dashboard` spawns a whole cluster (coordinator + a leader and follower per

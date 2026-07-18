@@ -13,15 +13,14 @@ use crate::vector::{VectorHit, VectorIndex};
 pub struct ShardStore {
     keyword: InvertedIndex,
     vector: VectorIndex,
+    /// Kept so the store can rebuild itself (snapshot install) with the same embedder.
+    embedder: Arc<dyn Embedder>,
 }
 
 impl ShardStore {
     /// Store over the default deterministic hash embedder.
     pub fn new() -> Self {
-        Self {
-            keyword: InvertedIndex::new(),
-            vector: VectorIndex::new(),
-        }
+        Self::with_embedder(Arc::new(common::embed::HashEmbedder))
     }
 
     /// Store over a caller-chosen embedder (must be identical on every node — see
@@ -29,7 +28,23 @@ impl ShardStore {
     pub fn with_embedder(embedder: Arc<dyn Embedder>) -> Self {
         Self {
             keyword: InvertedIndex::new(),
-            vector: VectorIndex::with_embedder(embedder),
+            vector: VectorIndex::with_embedder(embedder.clone()),
+            embedder,
+        }
+    }
+
+    /// All stored documents — the shard's full state, for snapshotting.
+    pub fn documents(&self) -> Vec<FlightDocument> {
+        self.keyword.documents()
+    }
+
+    /// Replace the entire contents (installing a snapshot): fresh indexes over the same
+    /// embedder, refilled from the given documents.
+    pub fn replace_all(&mut self, docs: Vec<FlightDocument>) {
+        self.keyword = InvertedIndex::new();
+        self.vector = VectorIndex::with_embedder(self.embedder.clone());
+        for doc in docs {
+            self.insert(doc);
         }
     }
 

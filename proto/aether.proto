@@ -108,6 +108,24 @@ service Replication {
 }
 
 // =============================================================================
+// Consensus transport  (raft, within one shard group)
+// =============================================================================
+// Members of a shard's raft group exchange consensus messages over these RPCs. The payload
+// is the raft library's own request/response types, serde-encoded: those types ARE the
+// consensus protocol (terms, votes, log entries), so the wire layer stays a dumb carrier
+// and upgrading the library never means re-modeling protobuf mirrors of its internals.
+
+message RaftPayload {
+  bytes data = 1; // serde-encoded raft message
+}
+
+service RaftTransport {
+  rpc AppendEntries(RaftPayload) returns (RaftPayload);
+  rpc Vote(RaftPayload) returns (RaftPayload);
+  rpc InstallSnapshot(RaftPayload) returns (RaftPayload);
+}
+
+// =============================================================================
 // Node registration  (control plane)
 // =============================================================================
 // A shard node announces itself to the coordinator on startup. This is what makes the

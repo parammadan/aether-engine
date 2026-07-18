@@ -83,6 +83,11 @@ impl InvertedIndex {
         self.docs.is_empty()
     }
 
+    /// All stored documents (for building snapshots of the shard's state).
+    pub fn documents(&self) -> Vec<FlightDocument> {
+        self.docs.clone()
+    }
+
     /// Per-term frequencies over the document's indexed text fields.
     fn term_freqs(doc: &FlightDocument) -> HashMap<String, u32> {
         let mut freqs: HashMap<String, u32> = HashMap::new();
