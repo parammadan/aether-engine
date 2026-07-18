@@ -49,9 +49,16 @@ aether-engine/
 
 ## Status
 
-Early work in progress. Landed so far: the `aether.v1` gRPC contract and the shard-key
-hashing. Single-node keyword search is in progress; the coordinator and shard node are
-currently stubs.
+Early work in progress. A single shard node serves keyword search over gRPC: the
+`aether.v1` contract, shard-key hashing, an in-memory inverted index, and the
+`ShardSearch` gRPC server are in place (index currently seeded with sample documents).
+Next: live ingestion from OpenSky. The coordinator (control plane) is still a stub.
+
+Run it:
+
+```bash
+cargo run -p shard-node        # serves ShardSearch on 127.0.0.1:50051
+```
 
 ## Build
 

@@ -1,14 +1,20 @@
-//! Aether shard node (data plane) — Q1 demo binary.
+//! Aether shard node (data plane) — Q1 gRPC server.
 //!
-//! Not the real server yet: it builds a small in-memory index from synthetic documents and
-//! runs a query, to show the inverted index working end-to-end. Still to come this quarter:
-//! OpenSky ingestion (with backpressure) to fill the index, and the `ShardSearch` gRPC
-//! server so it can be queried over the wire.
+//! Builds an in-memory inverted index, seeds it with a few synthetic documents (live
+//! OpenSky ingestion is the next Q1 step and will replace the seed), and serves the
+//! `ShardSearch.Search` RPC over gRPC. This is the single-node "search over gRPC" milestone.
+//!
+//! Config via env: `AETHER_SHARD_ADDR` (default 127.0.0.1:50051), `AETHER_SHARD_ID`
+//! (default "shard-0").
 
-use std::num::NonZeroU32;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
 
+use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::FlightDocument;
 use shard_node::index::InvertedIndex;
+use shard_node::server::ShardSearchService;
+use tonic::transport::Server;
 
 fn demo_doc(icao24: &str, callsign: &str, origin: &str, destination: &str, aircraft: &str) -> FlightDocument {
     FlightDocument {
@@ -21,31 +27,34 @@ fn demo_doc(icao24: &str, callsign: &str, origin: &str, destination: &str, aircr
     }
 }
 
-fn main() {
+fn seed_docs() -> Vec<FlightDocument> {
+    vec![
+        demo_doc("a1b2c3", "UAL231", "SFO", "JFK", "Boeing 737"),
+        demo_doc("d4e5f6", "DAL45", "ATL", "LAX", "Airbus A320"),
+        demo_doc("aa11bb", "UAL900", "ORD", "SFO", "Boeing 777"),
+    ]
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut index = InvertedIndex::new();
-    index.insert(demo_doc("a1b2c3", "UAL231", "SFO", "JFK", "Boeing 737"));
-    index.insert(demo_doc("d4e5f6", "DAL45", "ATL", "LAX", "Airbus A320"));
-    index.insert(demo_doc("aa11bb", "UAL900", "ORD", "SFO", "Boeing 777"));
-
-    let query = "sfo";
-    let results = index.search(query, 10);
-    println!(
-        "aether-shard-node demo — {} docs indexed; query '{}' matched {}:",
-        index.len(),
-        query,
-        results.total_matched
-    );
-    for hit in &results.hits {
-        println!(
-            "  {} {} ({} -> {})  score={}",
-            hit.doc.icao24, hit.doc.callsign, hit.doc.origin, hit.doc.destination, hit.score
-        );
+    for doc in seed_docs() {
+        index.insert(doc);
     }
+    let index = Arc::new(RwLock::new(index));
 
-    // Which shard would this aircraft's documents live on in a 4-node cluster?
-    let n = NonZeroU32::new(4).unwrap();
-    println!(
-        "shard for icao24=a1b2c3 with N=4 -> {}",
-        common::shard::shard_for("a1b2c3", n)
-    );
+    let addr: SocketAddr = std::env::var("AETHER_SHARD_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:50051".to_string())
+        .parse()?;
+    let shard_id = std::env::var("AETHER_SHARD_ID").unwrap_or_else(|_| "shard-0".to_string());
+
+    let service = ShardSearchService::new(index, shard_id.clone());
+    println!("aether-shard-node '{shard_id}' serving ShardSearch on {addr}");
+
+    Server::builder()
+        .add_service(ShardSearchServer::new(service))
+        .serve(addr)
+        .await?;
+
+    Ok(())
 }

@@ -782,6 +782,7 @@ dependencies = [
  "common",
  "prost",
  "tokio",
+ "tokio-stream",
  "tonic",
 ]
 
