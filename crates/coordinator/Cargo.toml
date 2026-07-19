@@ -19,3 +19,6 @@ tonic.workspace = true
 prost.workspace = true
 # Streaming responses (ReceiverStream) for progressive scatter-gather; TcpListenerStream in tests.
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"

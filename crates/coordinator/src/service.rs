@@ -21,6 +21,23 @@ use tonic::{Request, Response, Status};
 use crate::fanout::{merge_search_responses, scatter_gather, scatter_gather_vector, ProgressiveMerge};
 use crate::registry::Registry;
 
+/// The bearer credential a caller presented, to be replayed when a follower forwards a
+/// mutating RPC to the control-group leader (the leader authorizes it too).
+fn bearer_of<T>(req: &Request<T>) -> Option<String> {
+    req.metadata().get("authorization").and_then(|v| v.to_str().ok()).map(String::from)
+}
+
+/// Wrap a forwarded message, re-attaching the caller's bearer credential.
+fn forward<T>(msg: T, bearer: &Option<String>) -> Request<T> {
+    let mut req = Request::new(msg);
+    if let Some(h) = bearer {
+        if let Ok(v) = h.parse() {
+            req.metadata_mut().insert("authorization", v);
+        }
+    }
+    req
+}
+
 /// gRPC handler over a shared registry. The registry sits behind an `RwLock` because many
 /// nodes may register concurrently (writes) while query fan-out reads the shard map.
 pub struct CoordinatorService {
@@ -28,18 +45,26 @@ pub struct CoordinatorService {
     /// When this coordinator is a replica of a state group, operator-intent mutations
     /// (reassign, drain) commit through it instead of writing the registry directly.
     control: Option<Arc<crate::control::ControlPlane>>,
+    /// Scoped-token policy for client-facing RPCs (disabled = every check passes).
+    auth: Arc<crate::auth::Auth>,
 }
 
 impl CoordinatorService {
     pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
-        Self { registry, control: None }
+        Self { registry, control: None, auth: Arc::new(crate::auth::Auth::default()) }
     }
 
     pub fn with_control(
         registry: Arc<RwLock<Registry>>,
         control: Arc<crate::control::ControlPlane>,
     ) -> Self {
-        Self { registry, control: Some(control) }
+        Self { registry, control: Some(control), auth: Arc::new(crate::auth::Auth::default()) }
+    }
+
+    /// Attach a scoped-token policy (from `Auth::from_env`).
+    pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
+        self.auth = auth;
+        self
     }
 }
 
@@ -65,6 +90,7 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
         let limit = req.limit as usize;
 
@@ -153,6 +179,7 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<common::pb::VectorSearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
         let limit = req.limit as usize;
         let leaders = {
@@ -171,6 +198,8 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<DrainRequest>,
     ) -> Result<Response<DrainResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Operator)?;
+        let bearer = bearer_of(&request);
         let node_id = request.into_inner().node_id;
 
         // Replicated authority: validate against the LOCAL view (any replica's view knows
@@ -203,7 +232,7 @@ impl Coordinator for CoordinatorService {
                         .await
                         .map(common::pb::coordinator_client::CoordinatorClient::new)
                         .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
-                    return client.drain_node(DrainRequest { node_id }).await;
+                    return client.drain_node(forward(DrainRequest { node_id }, &bearer)).await;
                 }
                 Err(crate::control::ProposeError::Unavailable(msg)) => {
                     return Err(Status::unavailable(msg));
@@ -227,8 +256,9 @@ impl Coordinator for CoordinatorService {
 
     async fn get_cluster_state(
         &self,
-        _request: Request<ClusterStateRequest>,
+        request: Request<ClusterStateRequest>,
     ) -> Result<Response<ClusterStateResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Read)?;
         let registry = self
             .registry
             .read()
@@ -269,6 +299,8 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<ReassignVShardRequest>,
     ) -> Result<Response<ReassignVShardResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Operator)?;
+        let bearer = bearer_of(&request);
         let req = request.into_inner();
 
         // Replicated authority: validate here (table length + N are the same on every
@@ -299,7 +331,7 @@ impl Coordinator for CoordinatorService {
                         .await
                         .map(common::pb::coordinator_client::CoordinatorClient::new)
                         .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
-                    return client.reassign_v_shard(req).await;
+                    return client.reassign_v_shard(forward(req, &bearer)).await;
                 }
                 Err(crate::control::ProposeError::Unavailable(msg)) => {
                     return Err(Status::unavailable(msg));
@@ -327,6 +359,7 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<Self::SearchStreamStream>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
         let limit = req.limit as usize;
 

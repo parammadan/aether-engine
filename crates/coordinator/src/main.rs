@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // raft group replicating operator intent (vshard table + drain set), and its gRPC
     // server also carries the group's transport.
     let control = coordinator::control::ControlPlane::from_env(registry.clone()).await?;
+    let auth = Arc::new(coordinator::auth::Auth::from_env()?);
 
     println!(
         "aether-coordinator serving on {addr}; cluster N={shard_count}; liveness timeout {}s",
@@ -96,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(control) => {
             let control = Arc::new(control);
             let transport = consensus::service::RaftTransportService::new(control.raft.clone());
-            let service = CoordinatorService::with_control(registry, control);
+            let service = CoordinatorService::with_control(registry, control).with_auth(auth);
             builder
                 .add_service(CoordinatorServer::new(service))
                 .add_service(common::pb::raft_transport_server::RaftTransportServer::new(transport))
@@ -104,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
         }
         None => {
-            let service = CoordinatorService::new(registry);
+            let service = CoordinatorService::new(registry).with_auth(auth);
             builder
                 .add_service(CoordinatorServer::new(service))
                 .serve(addr)

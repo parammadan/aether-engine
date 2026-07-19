@@ -81,6 +81,19 @@ pub async fn channel(addr: &str) -> Result<Channel, NetError> {
     }
 }
 
+/// Attach this process's bearer token (`AETHER_TOKEN`) to an outgoing request, if set.
+/// A no-op when unset — plaintext/no-auth dev needs nothing. Client-facing callers wrap
+/// their requests with this; internal node RPCs don't (they authenticate by mTLS cert).
+pub fn with_token<T>(msg: T) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(msg);
+    if let Ok(token) = std::env::var("AETHER_TOKEN") {
+        if let Ok(v) = format!("Bearer {token}").parse() {
+            req.metadata_mut().insert("authorization", v);
+        }
+    }
+    req
+}
+
 /// Server-side config: `Some` = require mTLS (identity presented, client certs demanded
 /// and verified against the CA), `None` = plaintext mode.
 pub fn server_tls() -> Option<ServerTlsConfig> {
