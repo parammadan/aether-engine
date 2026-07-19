@@ -1109,6 +1109,7 @@ dependencies = [
  "openraft",
  "prost",
  "serde",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
