@@ -22,6 +22,9 @@
 //!   AETHER_GROUP_SIZE         raft group size           (default 3; groups of 2 can't
 //!                                                        survive a failure — quorum of 2 is 2)
 //!   AETHER_COORDINATOR_ADDR   coordinator to register with (optional; skipped if unset)
+//!   AETHER_COORDINATOR_ADDRS  comma-separated coordinator list (overrides the singular;
+//!                                                        register+heartbeat to ALL,
+//!                                                        reads use first healthy)
 //!   AETHER_NODE_ID            stable node id            (default "node-<index>")
 //!   AETHER_POLL_SECS          OpenSky poll interval     (default 10)
 //!   AETHER_INGEST             on | off                  (default on)
@@ -38,7 +41,7 @@ use common::pb::raft_transport_server::RaftTransportServer;
 use common::pb::replication_server::ReplicationServer;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::NodeRole;
-use shard_node::cluster::{register_with_coordinator, run_heartbeat};
+use shard_node::cluster::run_heartbeat;
 use shard_node::ingest::{
     run_ingestion, run_vshard_view, FlightSource, OpenSkySource, Ownership, ShardAssignment,
     SyntheticSource,
@@ -117,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let raft_mode = std::env::var("AETHER_CONSENSUS").map(|c| c.eq_ignore_ascii_case("raft")).unwrap_or(false);
     let group_size: usize = env_or("AETHER_GROUP_SIZE", 3);
     let ingest_on = std::env::var("AETHER_INGEST").map(|v| !v.eq_ignore_ascii_case("off")).unwrap_or(true);
-    let coordinator = std::env::var("AETHER_COORDINATOR_ADDR").ok();
+    let coordinators = shard_node::cluster::Coordinators::from_env();
 
     // Under raft, roles are outcomes of elections; every member registers as a follower.
     let role = if raft_mode || is_follower { NodeRole::Follower } else { NodeRole::Leader };
@@ -162,17 +165,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-    // Register with the coordinator if configured. A failure is logged but does NOT stop the
-    // node from serving: the data plane keeps running even if the control plane is down.
-    if let Some(coord_addr) = &coordinator {
-        match register_with_coordinator(coord_addr, &node_id, &advertise, shard_index, role).await {
+    // Register with the coordinators if configured. A failure is logged but does NOT stop
+    // the node from serving: the data plane keeps running even if the control plane is
+    // down. Registration goes to EVERY coordinator — each replica's view is its own.
+    if let Some(coords) = &coordinators {
+        match coords.register_all(&node_id, &advertise, shard_index, role).await {
             Ok(n) => println!("registered '{node_id}' as {role:?} of shard {shard_index} (cluster N={n})"),
-            Err(e) => eprintln!("warning: could not register with coordinator at {coord_addr}: {e}"),
+            Err(e) => eprintln!("warning: {e}"),
         }
         // Keep proving we're alive; raft members also report whether they lead their group.
         let hb_secs: u64 = env_or("AETHER_HEARTBEAT_SECS", 5);
         tokio::spawn(run_heartbeat(
-            coord_addr.clone(),
+            coords.clone(),
             node_id.clone(),
             advertise.clone(),
             shard_index,
@@ -189,18 +193,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // coordinator so nodes need no placement config of their own.
     let ownership = {
         let mut mapped = None;
-        if let Some(coord_addr) = &coordinator {
-            let endpoint = format!("http://{coord_addr}");
+        if let Some(coords) = &coordinators {
             for _ in 0..10 {
-                if let Ok(mut c) =
-                    common::pb::coordinator_client::CoordinatorClient::connect(endpoint.clone()).await
-                {
+                if let Some(mut c) = coords.first_healthy().await {
                     if let Ok(resp) = c.get_v_shard_assignments(common::pb::VShardAssignmentsRequest {}).await {
                         let table = resp.into_inner().group_of;
                         if !table.is_empty() {
                             println!("placement: virtual shards (V={}, group {shard_index})", table.len());
                             let assignments = Arc::new(RwLock::new(table));
-                            tokio::spawn(run_vshard_view(coord_addr.clone(), assignments.clone()));
+                            tokio::spawn(run_vshard_view(coords.clone(), assignments.clone()));
                             mapped = Some(Ownership::Mapped { group: shard_index, assignments });
                         }
                         break;
@@ -223,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match &raft {
         // Consensus-managed: form the group, then the ELECTED leader ingests through the log.
         Some((raft, my_raft_id)) => {
-            let coord_addr = coordinator.clone().ok_or("AETHER_CONSENSUS=raft requires AETHER_COORDINATOR_ADDR")?;
+            let coords = coordinators.clone().ok_or("AETHER_CONSENSUS=raft requires AETHER_COORDINATOR_ADDR(S)")?;
             let my_id = *my_raft_id;
 
             // A JOINING member (AETHER_RAFT_JOIN=1) never bootstraps: it stays uninitialized
@@ -232,9 +233,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let joining = std::env::var("AETHER_RAFT_JOIN").map(|v| v == "1").unwrap_or(false);
             if !joining {
                 let boot_raft = raft.clone();
-                let boot_coord = coord_addr.clone();
+                let boot_coords = coords.clone();
                 tokio::spawn(async move {
-                    let members = wait_for_group(&boot_coord, shard_index, group_size).await;
+                    let members = wait_for_group(&boot_coords, shard_index, group_size).await;
                     bootstrap_group(&boot_raft, my_id, members).await;
                 });
             }
@@ -244,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tokio::spawn(shard_node::raft::reconcile::run_membership_reconciler(
                 raft.clone(),
                 my_id,
-                coord_addr,
+                coords,
                 shard_index,
             ));
 
@@ -260,9 +261,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         // Legacy: a configured leader ingests directly and pushes best-effort replication.
         None if role == NodeRole::Leader && ingest_on => {
-            let replicate_tx = if let Some(coord_addr) = coordinator.clone() {
+            // Legacy replication predates multi-coordinator; it discovers followers via
+            // the FIRST coordinator only (this mode exists as the consensus contrast now).
+            let replicate_tx = if let Some(coords) = &coordinators {
                 let (tx, rx) = tokio::sync::mpsc::channel(8);
-                tokio::spawn(run_replication(coord_addr, shard_index, rx));
+                tokio::spawn(run_replication(coords.addrs()[0].clone(), shard_index, rx));
                 Some(tx)
             } else {
                 None

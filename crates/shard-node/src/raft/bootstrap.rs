@@ -21,7 +21,6 @@ use std::time::Duration;
 use openraft::BasicNode;
 use prost::Message;
 
-use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::ShardMembersRequest;
 use common::shard::fnv1a_64;
 
@@ -35,16 +34,15 @@ pub fn raft_node_id(node_id: &str) -> u64 {
     fnv1a_64(node_id.as_bytes())
 }
 
-/// Poll the coordinator until `group_size` members of this shard have registered; return
-/// the raft member map (raft id -> transport address).
+/// Poll the coordinators (first healthy answers) until `group_size` members of this shard
+/// have registered; return the raft member map (raft id -> transport address).
 pub async fn wait_for_group(
-    coordinator_addr: &str,
+    coordinators: &crate::cluster::Coordinators,
     shard_id: u32,
     group_size: usize,
 ) -> BTreeMap<u64, BasicNode> {
-    let endpoint = format!("http://{coordinator_addr}");
     loop {
-        if let Ok(mut client) = CoordinatorClient::connect(endpoint.clone()).await {
+        if let Some(mut client) = coordinators.first_healthy().await {
             if let Ok(resp) = client.list_shard_members(ShardMembersRequest { shard_id }).await {
                 let members = resp.into_inner().members;
                 if members.len() >= group_size {

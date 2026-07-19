@@ -79,16 +79,17 @@ impl Ownership {
 }
 
 /// Keep a live copy of the coordinator's virtual-shard table (used by
-/// [`Ownership::Mapped`]). Polls every couple of seconds; a fetch failure keeps the last
-/// known table (stale placement beats no placement).
-pub async fn run_vshard_view(coordinator_addr: String, assignments: Arc<RwLock<Vec<u32>>>) {
-    let endpoint = format!("http://{coordinator_addr}");
+/// [`Ownership::Mapped`]). Polls every couple of seconds, asking whichever coordinator
+/// answers first; a fetch failure keeps the last known table (stale placement beats no
+/// placement).
+pub async fn run_vshard_view(
+    coordinators: crate::cluster::Coordinators,
+    assignments: Arc<RwLock<Vec<u32>>>,
+) {
     let mut ticker = tokio::time::interval(Duration::from_secs(2));
     loop {
         ticker.tick().await;
-        let Ok(mut client) =
-            common::pb::coordinator_client::CoordinatorClient::connect(endpoint.clone()).await
-        else {
+        let Some(mut client) = coordinators.first_healthy().await else {
             continue;
         };
         if let Ok(resp) = client

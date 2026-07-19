@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use openraft::{BasicNode, ChangeMembers};
 
-use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::ShardMembersRequest;
 
 use super::bootstrap::raft_node_id;
@@ -27,10 +26,9 @@ use super::Raft;
 pub async fn run_membership_reconciler(
     raft: Raft,
     my_raft_id: u64,
-    coordinator_addr: String,
+    coordinators: crate::cluster::Coordinators,
     shard_id: u32,
 ) {
-    let endpoint = format!("http://{coordinator_addr}");
     let mut ticker = tokio::time::interval(Duration::from_secs(3));
     loop {
         ticker.tick().await;
@@ -38,8 +36,8 @@ pub async fn run_membership_reconciler(
             continue;
         }
 
-        // Intent: who has registered for this shard.
-        let Ok(mut client) = CoordinatorClient::connect(endpoint.clone()).await else {
+        // Intent: who has registered for this shard (first healthy coordinator answers).
+        let Some(mut client) = coordinators.first_healthy().await else {
             continue;
         };
         let Ok(resp) = client.list_shard_members(ShardMembersRequest { shard_id }).await else {
