@@ -63,8 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let http_addr: String =
         std::env::var("AETHER_DASHBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let coordinator_addr = "127.0.0.1:50050".to_string();
+    let raft = std::env::var("AETHER_CONSENSUS").map(|c| c.eq_ignore_ascii_case("raft")).unwrap_or(false);
 
-    let supervisor = Supervisor::new(shard_count, coordinator_addr.clone());
+    let supervisor = Supervisor::new(shard_count, coordinator_addr.clone(), raft);
     supervisor.spawn_coordinator()?;
     // Give the coordinator a beat to bind before nodes try to register (they retry anyway).
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -113,6 +114,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// promotions by diffing roles, and publish the combined snapshot for the UI.
 async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
     let endpoint = format!("http://{}", app.supervisor.coordinator_addr);
+    // The live query's term must match what the configured source actually produces:
+    // OpenSky documents carry origin countries ("United States"...); synthetic ones all
+    // carry "Synthetica". Overridable for custom demos.
+    let query_term = std::env::var("AETHER_DASHBOARD_QUERY").unwrap_or_else(|_| {
+        if std::env::var("AETHER_SOURCE").as_deref() == Ok("synthetic") {
+            "synthetica".to_string()
+        } else {
+            "united".to_string()
+        }
+    });
     let mut prev_roles: HashMap<String, i32> = HashMap::new();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -155,7 +166,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
 
             // One live query through the scatter-gather path.
             let t0 = Instant::now();
-            match client.search(SearchRequest { query: "united".to_string(), limit: 3 }).await {
+            match client.search(SearchRequest { query: query_term.clone(), limit: 3 }).await {
                 Ok(resp) => {
                     let r = resp.into_inner();
                     app.query_ok.fetch_add(1, Ordering::Relaxed);
@@ -231,7 +242,13 @@ async fn api_add_follower(
 ) -> impl IntoResponse {
     match app.supervisor.add_follower(shard_id) {
         Ok(node_id) => {
-            app.push_event(format!("spawned {node_id}"));
+            if app.supervisor.is_raft() {
+                // Registers and appears in the map, but joining the CONSENSUS group needs a
+                // membership change — that's the live-rebalancing work, stated honestly.
+                app.push_event(format!("spawned {node_id} (registered; outside raft membership)"));
+            } else {
+                app.push_event(format!("spawned {node_id}"));
+            }
             (axum::http::StatusCode::OK, node_id)
         }
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

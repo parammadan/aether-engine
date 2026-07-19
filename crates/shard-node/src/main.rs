@@ -39,7 +39,7 @@ use common::pb::replication_server::ReplicationServer;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::NodeRole;
 use shard_node::cluster::{register_with_coordinator, run_heartbeat};
-use shard_node::ingest::{run_ingestion, OpenSkySource, ShardAssignment};
+use shard_node::ingest::{run_ingestion, FlightSource, OpenSkySource, ShardAssignment, SyntheticSource};
 use shard_node::raft::bootstrap::{bootstrap_group, raft_node_id, run_leader_ingestion, wait_for_group};
 use shard_node::raft::network::GrpcRaftNetworkFactory;
 use shard_node::raft::service::RaftTransportService;
@@ -52,6 +52,18 @@ use tonic::transport::Server;
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+/// The flight source: live OpenSky by default, or a deterministic synthetic feed
+/// (`AETHER_SOURCE=synthetic`) for offline demos and tests. The synthetic seed is derived
+/// from the node id so two producers can never fabricate colliding aircraft.
+fn build_source(node_id: &str) -> Box<dyn FlightSource> {
+    if std::env::var("AETHER_SOURCE").as_deref() == Ok("synthetic") {
+        let seed = common::shard::fnv1a_64(node_id.as_bytes()) as u32;
+        Box::new(SyntheticSource::new(seed, 5))
+    } else {
+        Box::new(OpenSkySource::from_env())
+    }
 }
 
 /// Build the shard's document store with the configured embedder.
@@ -151,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             });
             if ingest_on {
                 tokio::spawn(run_leader_ingestion(
-                    OpenSkySource::from_env(),
+                    build_source(&node_id),
                     raft.clone(),
                     my_id,
                     Duration::from_secs(poll_secs),
@@ -169,9 +181,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None
             };
             let ingest_index = index.clone();
+            let source = build_source(&node_id);
             tokio::spawn(async move {
                 run_ingestion(
-                    OpenSkySource::from_env(),
+                    source,
                     ingest_index,
                     Duration::from_secs(poll_secs),
                     None,

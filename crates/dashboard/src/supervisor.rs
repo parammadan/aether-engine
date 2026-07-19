@@ -15,18 +15,26 @@ pub struct Supervisor {
     next_port: AtomicU16,
     follower_seq: AtomicU32,
     shard_count: u32,
+    /// Consensus mode: shards run as 3-member raft groups (elections, quorum writes)
+    /// instead of the legacy leader+follower pair.
+    raft: bool,
     pub coordinator_addr: String,
 }
 
 impl Supervisor {
-    pub fn new(shard_count: u32, coordinator_addr: String) -> Self {
+    pub fn new(shard_count: u32, coordinator_addr: String, raft: bool) -> Self {
         Self {
             children: Mutex::new(HashMap::new()),
             next_port: AtomicU16::new(50051),
             follower_seq: AtomicU32::new(1),
             shard_count,
+            raft,
             coordinator_addr,
         }
+    }
+
+    pub fn is_raft(&self) -> bool {
+        self.raft
     }
 
     /// The coordinator/shard-node binaries live next to this executable (same target dir).
@@ -50,30 +58,47 @@ impl Supervisor {
 
     fn spawn_shard_node(&self, node_id: &str, shard_id: u32, role: &str) -> io::Result<()> {
         let port = self.next_port.fetch_add(1, Ordering::SeqCst);
-        let child = Command::new(Self::bin("shard-node"))
-            .env("AETHER_SHARD_ADDR", format!("127.0.0.1:{port}"))
+        let mut cmd = Command::new(Self::bin("shard-node"));
+        cmd.env("AETHER_SHARD_ADDR", format!("127.0.0.1:{port}"))
             .env("AETHER_SHARD_INDEX", shard_id.to_string())
             .env("AETHER_SHARD_COUNT", self.shard_count.to_string())
             .env("AETHER_ROLE", role)
             .env("AETHER_COORDINATOR_ADDR", &self.coordinator_addr)
             .env("AETHER_NODE_ID", node_id)
             .env("AETHER_HEARTBEAT_SECS", "2")
-            .env("AETHER_POLL_SECS", "10")
-            .spawn()?;
+            .env("AETHER_POLL_SECS", std::env::var("AETHER_POLL_SECS").unwrap_or_else(|_| "10".into()));
+        // Pass the source choice through (e.g. AETHER_SOURCE=synthetic for offline demos).
+        if let Ok(source) = std::env::var("AETHER_SOURCE") {
+            cmd.env("AETHER_SOURCE", source);
+        }
+        if self.raft {
+            cmd.env("AETHER_CONSENSUS", "raft").env("AETHER_GROUP_SIZE", "3");
+        }
+        let child = cmd.spawn()?;
         self.children.lock().unwrap().insert(node_id.to_string(), child);
         Ok(())
     }
 
-    /// Initial topology: one leader + one follower per shard.
+    /// Initial topology. Legacy: one leader + one follower per shard. Raft: three equal
+    /// members per shard (roles are election outcomes, and a group of 2 couldn't survive a
+    /// kill — which is the whole point of the demo).
     pub fn spawn_initial_topology(&self) -> io::Result<Vec<String>> {
         let mut spawned = Vec::new();
         for shard in 0..self.shard_count {
-            let leader = format!("shard{shard}-leader");
-            self.spawn_shard_node(&leader, shard, "leader")?;
-            spawned.push(leader);
-            let follower = format!("shard{shard}-f0");
-            self.spawn_shard_node(&follower, shard, "follower")?;
-            spawned.push(follower);
+            if self.raft {
+                for member in 0..3 {
+                    let node_id = format!("shard{shard}-m{member}");
+                    self.spawn_shard_node(&node_id, shard, "follower")?;
+                    spawned.push(node_id);
+                }
+            } else {
+                let leader = format!("shard{shard}-leader");
+                self.spawn_shard_node(&leader, shard, "leader")?;
+                spawned.push(leader);
+                let follower = format!("shard{shard}-f0");
+                self.spawn_shard_node(&follower, shard, "follower")?;
+                spawned.push(follower);
+            }
         }
         Ok(spawned)
     }

@@ -50,6 +50,49 @@ pub trait FlightSource: Send + Sync {
     async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError>;
 }
 
+// Allow choosing a source at runtime without making every loop generic-caller care.
+#[async_trait]
+impl FlightSource for Box<dyn FlightSource> {
+    async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
+        self.as_ref().fetch().await
+    }
+}
+
+/// A deterministic, network-free source: every poll fabricates a fresh batch of distinct
+/// aircraft (all with origin "Synthetica", so one term matches everything it has ever
+/// produced). For offline demos and chaos tests where the ingestion PIPELINE is the thing
+/// under test, not the upstream feed. `seed` namespaces ids so two producers (e.g. an old
+/// and a newly elected leader) can never collide.
+pub struct SyntheticSource {
+    seed: u32,
+    batch_size: usize,
+    seq: std::sync::atomic::AtomicU32,
+}
+
+impl SyntheticSource {
+    pub fn new(seed: u32, batch_size: usize) -> Self {
+        Self { seed, batch_size, seq: std::sync::atomic::AtomicU32::new(0) }
+    }
+}
+
+#[async_trait]
+impl FlightSource for SyntheticSource {
+    async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
+        let mut docs = Vec::with_capacity(self.batch_size);
+        for _ in 0..self.batch_size {
+            let s = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            docs.push(FlightDocument {
+                icao24: format!("{:04x}{:06x}", self.seed, s),
+                callsign: format!("SYN{s}"),
+                origin: "Synthetica".to_string(),
+                aircraft_type: "TestJet".to_string(),
+                ..Default::default()
+            });
+        }
+        Ok(docs)
+    }
+}
+
 /// Run the ingestion loop: poll `source` every `poll_interval`, inserting each snapshot into
 /// `index`. When `shard` is `Some`, only documents this shard owns are indexed — so every
 /// node can pull the full OpenSky snapshot but keep only its `hash(icao24) % N` slice.
