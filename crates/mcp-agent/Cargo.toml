@@ -1,0 +1,26 @@
+[package]
+name = "mcp-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A READ-ONLY MCP server exposing the cluster as agent tools: an LLM agent can translate
+# natural language into structured queries and execute them over the coordinator. The
+# boundary is structural: this binary only ever calls Search / VectorSearch /
+# GetClusterState — it has no code path that mutates routing, membership, placement, or
+# documents. Blast radius of a bad agent output: one wrong result set.
+
+[[bin]]
+name = "aether-mcp"
+path = "src/main.rs"
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+tonic.workspace = true
+serde_json = "1"
+
+[dev-dependencies]
+coordinator = { path = "../coordinator" }
+shard-node = { path = "../shard-node" }
+tokio-stream = { version = "0.1", features = ["net"] }

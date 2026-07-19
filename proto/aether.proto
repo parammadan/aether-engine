@@ -209,6 +209,11 @@ service Coordinator {
   // update never arrives — the rest keep converging).
   rpc SearchStream(SearchRequest) returns (stream SearchUpdate);
 
+  // Vector scatter-gather: the caller embeds the query text ONCE and the coordinator fans
+  // the vector to every shard leader's VectorSearch, merging by the same score-descending
+  // rule (scores are cosine similarity on both paths).
+  rpc VectorSearch(VectorSearchRequest) returns (SearchResponse);
+
   // Followers of a shard, so a leader can discover where to replicate.
   rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse);
 

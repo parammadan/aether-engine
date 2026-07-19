@@ -148,3 +148,12 @@ cargo test -p common   # shard-key hashing tests
 ## License
 
 MIT.
+
+## Agent access (MCP, read-only)
+
+`cargo run -p mcp-agent` starts `aether-mcp`, a [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio that lets an LLM agent query the cluster natively with three tools:
+keyword search, semantic search, and cluster topology. The boundary is structural — the
+binary only links the read RPCs (`Search`, `VectorSearch`, `GetClusterState`), so an agent
+can at worst return a wrong result set; all mutation (elections, membership, placement)
+belongs to the cluster's own deterministic machinery.

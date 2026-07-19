@@ -134,6 +134,31 @@ impl ProgressiveMerge {
     }
 }
 
+/// Vector variant of [`scatter_gather`]: fan an already-embedded query vector to every
+/// leader's `VectorSearch`. Same availability posture — unreachable shards are omitted and
+/// reported as coverage.
+pub async fn scatter_gather_vector(
+    leaders: Vec<String>,
+    request: common::pb::VectorSearchRequest,
+) -> Vec<SearchResponse> {
+    let mut set = JoinSet::new();
+    for addr in leaders {
+        let req = request.clone();
+        set.spawn(async move {
+            let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
+            let resp = client.vector_search(req).await.ok()?;
+            Some(resp.into_inner())
+        });
+    }
+    let mut responses = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(resp)) = joined {
+            responses.push(resp);
+        }
+    }
+    responses
+}
+
 /// Query every leader address concurrently and collect the responses that succeed. A leader
 /// that can't be reached or errors is simply omitted — the caller reports coverage so the
 /// result is *partial*, not a failure of the whole query.

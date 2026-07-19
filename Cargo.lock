@@ -1609,6 +1609,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcp-agent"
+version = "0.0.0"
+dependencies = [
+ "common",
+ "coordinator",
+ "serde_json",
+ "shard-node",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

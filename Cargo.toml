@@ -4,12 +4,11 @@ members = [
     "crates/common",
     "crates/coordinator",
     "crates/dashboard",
+    "crates/mcp-agent",
     "crates/shard-node",
 ]
 
-# Centralize versions here so every crate shares one source of truth.
-# Q1 dependency set is deliberately minimal: async runtime + gRPC only.
-# NO onnxruntime / HNSW / openraft — those are later quarters (see README roadmap).
+# Centralize shared versions here so every crate uses one source of truth.
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 tonic = "0.12"

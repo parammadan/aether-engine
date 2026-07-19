@@ -19,7 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
-use crate::fanout::{merge_search_responses, scatter_gather, ProgressiveMerge};
+use crate::fanout::{merge_search_responses, scatter_gather, scatter_gather_vector, ProgressiveMerge};
 use crate::registry::Registry;
 
 /// gRPC handler over a shared registry. The registry sits behind an `RwLock` because many
@@ -138,6 +138,24 @@ impl Coordinator for CoordinatorService {
             })
             .collect();
         Ok(Response::new(ShardMembersResponse { members }))
+    }
+
+    async fn vector_search(
+        &self,
+        request: Request<common::pb::VectorSearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let req = request.into_inner();
+        let limit = req.limit as usize;
+        let leaders = {
+            let registry = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?;
+            registry.leader_addresses()
+        };
+        let shards_queried = leaders.len() as u32;
+        let responses = scatter_gather_vector(leaders, req).await;
+        Ok(Response::new(merge_search_responses(responses, limit, shards_queried)))
     }
 
     async fn drain_node(
