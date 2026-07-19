@@ -77,17 +77,19 @@ select it with `AETHER_EMBEDDER=onnx AETHER_ONNX_MODEL_DIR=...`. Every node in a
 must use the same embedder: embeddings are a cross-node contract, and shards reject query
 vectors whose dimension doesn't match their own.
 
-## Consensus (in progress)
+## Consensus
 
-Shard groups are gaining real consensus via [`openraft`](https://github.com/databendlabs/openraft):
-the members serving one shard form a raft group whose replicated log is the document
-stream, with the shard's store as the state machine — leader election, quorum-committed
-writes, and split-brain handling by construction (a raft-managed shard runs 3+ members,
-since a group of 2 cannot survive a failure). The foundation is in (`shard-node/src/raft/`:
-in-memory log storage, store-backed state machine, gRPC transport carrying the raft
-protocol) and verified by a test that elects a leader over real gRPC, quorum-replicates
-searchable writes to all members, kills the leader, and keeps writing under the new one.
-Wiring it into ingestion and coordinator routing is next.
+Shards can run under real consensus via [`openraft`](https://github.com/databendlabs/openraft)
+(`AETHER_CONSENSUS=raft`): the members serving one shard form a raft group whose replicated
+log is the document stream, with the shard's store as the state machine — leader election,
+quorum-committed writes, and split-brain handling by construction (raft shards run 3+
+members, since a group of 2 cannot survive a failure). Members discover their group through
+the coordinator and the member with the smallest raft id initializes it; the **elected**
+leader ingests, writing every batch through the log so it commits into all members' stores;
+heartbeats report raft leadership, so the coordinator's shard map is a *view* of raft state
+rather than an authority. Verified in-process (election, quorum-searchable writes,
+re-election) and across real processes: three shard-node binaries form a group, the elected
+leader is SIGKILLed, the survivors re-elect, and query routing follows the new leader.
 
 ## Live dashboard / chaos harness
 

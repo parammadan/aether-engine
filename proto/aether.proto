@@ -167,6 +167,11 @@ message ListReplicasResponse {
 // heard from within a timeout, so a dead node stops being routed to.
 message HeartbeatRequest {
   string node_id = 1;
+  // Set by consensus-managed nodes that currently lead their shard's raft group. For those
+  // shards the coordinator's shard map is a VIEW of raft state, not an authority: a leader
+  // report updates routing (the previous leader is demoted in the map). Elections happen in
+  // the group; the coordinator just learns about them.
+  bool raft_leader = 2;
 }
 
 message HeartbeatResponse {
@@ -213,6 +218,19 @@ service Coordinator {
   // Observability: the coordinator's current view of the cluster (who leads/follows each
   // shard and how recently each node was seen). Consumed by dashboards/tooling.
   rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
+
+  // Every registered member of one shard, regardless of role. Consensus-managed members use
+  // this to discover their raft group: register, poll until the group is complete, then the
+  // member with the smallest raft id initializes it (deterministic over the same set).
+  rpc ListShardMembers(ShardMembersRequest) returns (ShardMembersResponse);
+}
+
+message ShardMembersRequest {
+  uint32 shard_id = 1;
+}
+
+message ShardMembersResponse {
+  repeated NodeState members = 1;
 }
 
 message ClusterStateRequest {}

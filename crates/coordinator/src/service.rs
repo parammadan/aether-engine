@@ -9,7 +9,8 @@ use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::{
     ClusterStateRequest, ClusterStateResponse, HeartbeatRequest, HeartbeatResponse,
     ListReplicasRequest, ListReplicasResponse, NodeState, RegisterNodeRequest,
-    RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate,
+    RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate, ShardMembersRequest,
+    ShardMembersResponse,
 };
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::ReceiverStream;
@@ -93,16 +94,47 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<HeartbeatRequest>,
     ) -> Result<Response<HeartbeatResponse>, Status> {
-        let node_id = request.into_inner().node_id;
+        let req = request.into_inner();
+        let now = Instant::now();
         let mut registry = self
             .registry
             .write()
             .map_err(|_| Status::internal("registry lock poisoned"))?;
-        let role = registry.heartbeat(&node_id, Instant::now());
+        let mut role = registry.heartbeat(&req.node_id, now);
+        // A raft-elected leader's report rewires routing: raft did the arbitration.
+        if req.raft_leader && role.is_some() {
+            if let Some(shard) = registry.report_raft_leader(&req.node_id, now) {
+                println!("coordinator: raft leader '{}' now routes shard {shard}", req.node_id);
+            }
+            role = Some(common::pb::NodeRole::Leader);
+        }
         Ok(Response::new(HeartbeatResponse {
             known: role.is_some(),
             current_role: role.unwrap_or(common::pb::NodeRole::Unspecified) as i32,
         }))
+    }
+
+    async fn list_shard_members(
+        &self,
+        request: Request<ShardMembersRequest>,
+    ) -> Result<Response<ShardMembersResponse>, Status> {
+        let shard_id = request.into_inner().shard_id;
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        let members = registry
+            .members_of(shard_id, Instant::now())
+            .into_iter()
+            .map(|n| NodeState {
+                node_id: n.node_id,
+                address: n.address,
+                role: n.role as i32,
+                shard_id: n.shard_id,
+                millis_since_seen: n.since_seen.as_millis() as u64,
+            })
+            .collect();
+        Ok(Response::new(ShardMembersResponse { members }))
     }
 
     async fn get_cluster_state(

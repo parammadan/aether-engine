@@ -59,12 +59,15 @@ pub async fn register_with_coordinator(
 /// failed heartbeat is logged and retried on the next tick (a transient coordinator blip
 /// must not take the node down).
 ///
-/// The node tracks its *current* role, seeded from `initial_role` but updated from every
-/// heartbeat response: if the coordinator promoted this node (follower -> leader on
-/// failover), the next heartbeat teaches it. When the coordinator reports the node unknown
-/// (e.g. the coordinator restarted and lost its shard map), the node re-registers with the
-/// TRACKED role — not the boot-time one — so a restart can't silently demote a promoted
-/// leader back to follower.
+/// Two authority models, depending on `raft`:
+/// - **Legacy (raft = None):** the node tracks its *current* role, seeded from
+///   `initial_role` but updated from every heartbeat response — the coordinator's promotion
+///   is authoritative, and on a coordinator restart the node re-registers with the TRACKED
+///   role, not the boot-time one.
+/// - **Consensus-managed (raft = Some):** authority is inverted. The node reports whether
+///   it currently leads its shard's raft group (read from raft metrics each tick), and
+///   IGNORES the coordinator's role opinion — elections happen in the group, and the
+///   coordinator's map is just a routing view kept fresh by these reports.
 pub async fn run_heartbeat(
     coordinator_addr: String,
     node_id: String,
@@ -72,6 +75,7 @@ pub async fn run_heartbeat(
     shard_id: u32,
     initial_role: NodeRole,
     interval: Duration,
+    raft: Option<(crate::raft::Raft, u64)>,
 ) {
     let mut current_role = initial_role;
     let mut ticker = tokio::time::interval(interval);
@@ -81,29 +85,42 @@ pub async fn run_heartbeat(
         else {
             continue; // coordinator unreachable this tick; try again next tick
         };
-        match client.heartbeat(HeartbeatRequest { node_id: node_id.clone() }).await {
+
+        let raft_leader = raft
+            .as_ref()
+            .map(|(r, my_id)| r.metrics().borrow().current_leader == Some(*my_id))
+            .unwrap_or(false);
+
+        match client
+            .heartbeat(HeartbeatRequest { node_id: node_id.clone(), raft_leader })
+            .await
+        {
             Ok(resp) => {
                 let resp = resp.into_inner();
                 if resp.known {
-                    // Adopt the coordinator's view of our role (ignore Unspecified).
-                    match resp.current_role() {
-                        NodeRole::Unspecified => {}
-                        role => {
-                            if role != current_role {
-                                println!("node '{node_id}': role is now {role:?} (was {current_role:?})");
+                    // Legacy mode only: adopt the coordinator's view of our role. Under
+                    // raft, leadership comes from the group, not the coordinator.
+                    if raft.is_none() {
+                        match resp.current_role() {
+                            NodeRole::Unspecified => {}
+                            role => {
+                                if role != current_role {
+                                    println!("node '{node_id}': role is now {role:?} (was {current_role:?})");
+                                }
+                                current_role = role;
                             }
-                            current_role = role;
                         }
                     }
                 } else {
                     // Coordinator forgot us; re-register with who we ARE now, not who we
                     // were at boot.
+                    let role = if raft.is_some() { NodeRole::Follower } else { current_role };
                     let _ = register_with_coordinator(
                         &coordinator_addr,
                         &node_id,
                         &address,
                         shard_id,
-                        current_role,
+                        role,
                     )
                     .await;
                 }

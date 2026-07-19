@@ -18,6 +18,7 @@
 //! Note on group size: a group of 2 cannot survive any failure (a quorum of 2 is 2), so a
 //! raft-managed shard runs at least 3 members — quorum 2 of 3 rides out one death.
 
+pub mod bootstrap;
 pub mod network;
 pub mod service;
 pub mod storage;

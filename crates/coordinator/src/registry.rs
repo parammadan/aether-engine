@@ -242,6 +242,51 @@ impl Registry {
         removed
     }
 
+    /// Every registered member of one shard, regardless of role (raft group discovery).
+    pub fn members_of(&self, shard_id: u32, now: Instant) -> Vec<NodeSnapshot> {
+        self.snapshot(now)
+            .into_iter()
+            .filter(|n| n.shard_id == shard_id)
+            .collect()
+    }
+
+    /// A consensus-managed node reported (via heartbeat) that it currently leads its
+    /// shard's raft group. For such shards the map is a VIEW of raft state: the reporter
+    /// becomes the routed leader and any previous leader is demoted to a follower entry.
+    /// The live-leader registration guard deliberately does NOT apply here — that guard
+    /// exists because self-claimed registrations can't be trusted to arbitrate leadership,
+    /// but a raft election already did the arbitration (terms + quorum).
+    ///
+    /// Returns `Some(shard_id)` when this changed the routed leader.
+    pub fn report_raft_leader(&mut self, node_id: &str, now: Instant) -> Option<u32> {
+        // Already the routed leader? Just a liveness refresh, no change.
+        if let Some((&shard, _)) = self.leaders.iter().find(|(_, n)| n.node_id == node_id) {
+            if let Some(leader) = self.leaders.get_mut(&shard) {
+                leader.last_seen = now;
+            }
+            return None;
+        }
+
+        // Find the reporter among followers and promote it in the map.
+        let found = self.followers.iter().find_map(|(&shard, nodes)| {
+            nodes
+                .iter()
+                .position(|n| n.node_id == node_id)
+                .map(|idx| (shard, idx))
+        })?;
+        let (shard, idx) = found;
+
+        let mut promoted = self.followers.get_mut(&shard).unwrap().remove(idx);
+        promoted.role = NodeRole::Leader;
+        promoted.last_seen = now;
+
+        if let Some(mut old) = self.leaders.insert(shard, promoted) {
+            old.role = NodeRole::Follower;
+            self.followers.entry(shard).or_default().push(old);
+        }
+        Some(shard)
+    }
+
     /// A point-in-time view of every known node, for observability (dashboards/tooling).
     pub fn snapshot(&self, now: Instant) -> Vec<NodeSnapshot> {
         let mut nodes = Vec::new();
@@ -466,6 +511,44 @@ mod tests {
         reg.register(req("f0", 0, NodeRole::Follower));
         reg.register(req("f0", 0, NodeRole::Follower)); // same node_id again
         assert_eq!(reg.follower_addresses(0).len(), 1);
+    }
+
+    #[test]
+    fn raft_leader_report_rewires_routing_and_demotes_the_old_leader() {
+        let mut reg = Registry::new(1);
+        let t0 = Instant::now();
+        reg.register_at(req("m1", 0, NodeRole::Leader), t0);
+        reg.register_at(req("m2", 0, NodeRole::Follower), t0);
+        reg.register_at(req("m3", 0, NodeRole::Follower), t0);
+
+        // m2 wins a raft election and reports leadership: routing follows raft, guard or
+        // no guard (m1 is perfectly live — that's the point).
+        let changed = reg.report_raft_leader("m2", t0);
+        assert_eq!(changed, Some(0));
+        let snap = reg.snapshot(t0);
+        let leader = snap.iter().find(|n| n.role == NodeRole::Leader).unwrap();
+        assert_eq!(leader.node_id, "m2");
+        // The old leader is now a follower entry, not gone.
+        assert!(snap.iter().any(|n| n.node_id == "m1" && n.role == NodeRole::Follower));
+
+        // A repeat report from the same leader is a liveness refresh, not a change.
+        assert_eq!(reg.report_raft_leader("m2", t0), None);
+        // An unknown node changes nothing.
+        assert_eq!(reg.report_raft_leader("ghost", t0), None);
+    }
+
+    #[test]
+    fn members_of_returns_every_member_of_that_shard_only() {
+        let mut reg = Registry::new(2);
+        let t0 = Instant::now();
+        reg.register_at(req("a", 0, NodeRole::Leader), t0);
+        reg.register_at(req("b", 0, NodeRole::Follower), t0);
+        reg.register_at(req("c", 1, NodeRole::Leader), t0);
+
+        let members: Vec<String> =
+            reg.members_of(0, t0).into_iter().map(|n| n.node_id).collect();
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&"a".to_string()) && members.contains(&"b".to_string()));
     }
 
     #[test]
