@@ -81,12 +81,40 @@ for i in 0 1 2 3; do
   echo "  ${PUB[$i]} up"
 done
 
+# AETHER_TLS=1 provisions a cluster that runs mTLS + scoped tokens end to end. Certs are
+# generated once (with every instance's private IP in the SAN list) and shipped per node;
+# a two-token file (read + operator) is shipped too. The public IP is added to the SAN so
+# the operator's dashboard can verify the coordinator over TLS.
+TLS_ON="${AETHER_TLS:-0}"
+TLS_ENV_COORD=""
+TLS_ENV_MEMBER_ROLE=""
+if [ "$TLS_ON" = "1" ]; then
+  echo "== [tls] generating cluster certs (SANs: member private IPs + coordinator public) =="
+  rm -rf .keys/certs
+  ../scripts/gen-certs.sh .keys/certs "$COORD_PUB" "${PRIV[0]}" "${PRIV[1]}" "${PRIV[2]}" "${PRIV[3]}" >/dev/null
+  # A demo token file: one read token, one operator token.
+  printf 'read-demo read\noperator-demo operator\n' > .keys/tokens
+  TLS_ENV_COORD="Environment=AETHER_TLS_DIR=/etc/aether/certs
+Environment=AETHER_TLS_ROLE=coordinator
+Environment=AETHER_TOKENS_FILE=/etc/aether/tokens"
+  TLS_ENV_MEMBER_ROLE="Environment=AETHER_TLS_DIR=/etc/aether/certs
+Environment=AETHER_TLS_ROLE=member"
+fi
+
 echo "== [5/6] installing binaries + systemd units =="
 install_node() { # idx name unit_body
   local ip="${PUB[$1]}"
   scp -i .keys/aether-key.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q \
     target-linux/release/coordinator target-linux/release/shard-node "$RUN_USER@$ip:/tmp/"
-  $SSH "$RUN_USER@$ip" "sudo mv /tmp/coordinator /tmp/shard-node /usr/local/bin/ && sudo chmod +x /usr/local/bin/coordinator /usr/local/bin/shard-node && sudo mkdir -p /var/lib/aether && echo '$3' | sudo tee /etc/systemd/system/$2.service >/dev/null && sudo systemctl daemon-reload && sudo systemctl enable --now $2"
+  $SSH "$RUN_USER@$ip" "sudo mv /tmp/coordinator /tmp/shard-node /usr/local/bin/ && sudo chmod +x /usr/local/bin/coordinator /usr/local/bin/shard-node && sudo mkdir -p /var/lib/aether"
+  if [ "$TLS_ON" = "1" ]; then
+    $SSH "$RUN_USER@$ip" "sudo mkdir -p /etc/aether/certs"
+    scp -i .keys/aether-key.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q \
+      .keys/certs/ca.crt .keys/certs/coordinator.crt .keys/certs/coordinator.key \
+      .keys/certs/member.crt .keys/certs/member.key .keys/tokens "$RUN_USER@$ip:/tmp/"
+    $SSH "$RUN_USER@$ip" "sudo mv /tmp/ca.crt /tmp/coordinator.crt /tmp/coordinator.key /tmp/member.crt /tmp/member.key /etc/aether/certs/ && sudo mv /tmp/tokens /etc/aether/tokens && sudo chmod 600 /etc/aether/certs/*.key"
+  fi
+  $SSH "$RUN_USER@$ip" "echo '$3' | sudo tee /etc/systemd/system/$2.service >/dev/null && sudo systemctl daemon-reload && sudo systemctl enable --now $2"
 }
 
 COORD_UNIT="[Unit]
@@ -95,6 +123,7 @@ Description=aether coordinator
 Environment=AETHER_COORDINATOR_ADDR=0.0.0.0:50050
 Environment=AETHER_SHARD_COUNT=1
 Environment=AETHER_LIVENESS_TIMEOUT_SECS=6
+$TLS_ENV_COORD
 ExecStart=/usr/local/bin/coordinator
 Restart=on-failure
 [Install]
@@ -118,6 +147,7 @@ Environment=AETHER_HEARTBEAT_SECS=1
 Environment=AETHER_SOURCE=synthetic
 Environment=AETHER_POLL_SECS=1
 Environment=AETHER_DATA_DIR=/var/lib/aether
+$TLS_ENV_MEMBER_ROLE
 ExecStart=/usr/local/bin/shard-node
 Restart=on-failure
 [Install]
