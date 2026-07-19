@@ -29,6 +29,7 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    common::net::install_crypto();
     let addr: SocketAddr = std::env::var("AETHER_COORDINATOR_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:50050".to_string())
         .parse()?;
@@ -86,12 +87,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         liveness_timeout.as_secs()
     );
 
+    let mut builder = Server::builder();
+    if let Some(tls) = common::net::server_tls() {
+        builder = builder.tls_config(tls)?;
+        println!("tls: mTLS required on {addr}");
+    }
     match control {
         Some(control) => {
             let control = Arc::new(control);
             let transport = consensus::service::RaftTransportService::new(control.raft.clone());
             let service = CoordinatorService::with_control(registry, control);
-            Server::builder()
+            builder
                 .add_service(CoordinatorServer::new(service))
                 .add_service(common::pb::raft_transport_server::RaftTransportServer::new(transport))
                 .serve(addr)
@@ -99,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => {
             let service = CoordinatorService::new(registry);
-            Server::builder()
+            builder
                 .add_service(CoordinatorServer::new(service))
                 .serve(addr)
                 .await?;

@@ -203,6 +203,7 @@ async fn handle(msg: &Value) -> Option<Value> {
 
 #[tokio::main]
 async fn main() {
+    common::net::install_crypto();
     eprintln!("aether-mcp: read-only query agent over coordinator(s) {}", common::client::coordinator_addrs("127.0.0.1:50050").join(", "));
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();

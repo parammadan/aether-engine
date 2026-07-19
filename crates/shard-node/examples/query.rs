@@ -11,12 +11,12 @@ use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::SearchRequest;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = std::env::var("AETHER_SHARD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let query = std::env::args().nth(1).unwrap_or_default();
     let limit: u32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5);
 
-    let mut client = ShardSearchClient::connect(format!("http://{addr}")).await?;
+    let mut client = ShardSearchClient::new(common::net::channel(&addr).await?);
     let resp = client
         .search(SearchRequest { query: query.clone(), limit })
         .await?

@@ -104,6 +104,7 @@ fn build_store() -> Result<ShardStore, Box<dyn std::error::Error + Send + Sync>>
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    common::net::install_crypto();
     let addr_str = std::env::var("AETHER_SHARD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let addr: SocketAddr = addr_str.parse()?;
     // Bind vs advertise: on a real network a node binds 0.0.0.0 but must register an
@@ -294,7 +295,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "aether-shard-node '{shard_id_label}' ({role:?}, {mode}) serving on {addr}; shard {shard_index}/{shard_count}"
     );
 
-    let mut router = Server::builder()
+    let mut builder = Server::builder();
+    if let Some(tls) = common::net::server_tls() {
+        builder = builder.tls_config(tls)?;
+        println!("tls: mTLS required on {addr}");
+    }
+    let mut router = builder
         .add_service(ShardSearchServer::new(search))
         .add_service(ReplicationServer::new(replication));
     if let Some((raft, _)) = raft {

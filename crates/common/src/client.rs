@@ -37,8 +37,8 @@ pub async fn connect_first_healthy(
     addrs: &[String],
 ) -> Result<CoordinatorClient<Channel>, String> {
     for addr in addrs {
-        if let Ok(client) = CoordinatorClient::connect(format!("http://{addr}")).await {
-            return Ok(client);
+        if let Ok(channel) = crate::net::channel(addr).await {
+            return Ok(CoordinatorClient::new(channel));
         }
     }
     Err(format!("no coordinator reachable (tried: {})", addrs.join(", ")))

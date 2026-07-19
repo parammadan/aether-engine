@@ -199,11 +199,10 @@ impl Coordinator for CoordinatorService {
                 }
                 Err(crate::control::ProposeError::Leader(addr)) => {
                     // A follower took the call: forward the whole RPC to the leader.
-                    let mut client = common::pb::coordinator_client::CoordinatorClient::connect(
-                        format!("http://{addr}"),
-                    )
-                    .await
-                    .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
+                    let mut client = common::net::channel(&addr)
+                        .await
+                        .map(common::pb::coordinator_client::CoordinatorClient::new)
+                        .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
                     return client.drain_node(DrainRequest { node_id }).await;
                 }
                 Err(crate::control::ProposeError::Unavailable(msg)) => {
@@ -296,11 +295,10 @@ impl Coordinator for CoordinatorService {
                     }));
                 }
                 Err(crate::control::ProposeError::Leader(addr)) => {
-                    let mut client = common::pb::coordinator_client::CoordinatorClient::connect(
-                        format!("http://{addr}"),
-                    )
-                    .await
-                    .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
+                    let mut client = common::net::channel(&addr)
+                        .await
+                        .map(common::pb::coordinator_client::CoordinatorClient::new)
+                        .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
                     return client.reassign_v_shard(req).await;
                 }
                 Err(crate::control::ProposeError::Unavailable(msg)) => {

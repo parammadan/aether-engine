@@ -33,7 +33,7 @@ pub fn shard_timeout() -> Duration {
 /// an operator debugging coverage drops needs to know which problem they have.
 pub(crate) async fn query_leader(addr: String, req: SearchRequest) -> Option<SearchResponse> {
     let attempt = tokio::time::timeout(shard_timeout(), async {
-        let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
+        let mut client = common::net::channel(&addr).await.ok().map(ShardSearchClient::new)?;
         client.search(req).await.ok().map(|r| r.into_inner())
     })
     .await;
@@ -187,7 +187,7 @@ pub async fn scatter_gather_vector(
         set.spawn(async move {
             let attempt = tokio::time::timeout(shard_timeout(), async {
                 let mut client =
-                    ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
+                    common::net::channel(&addr).await.ok().map(ShardSearchClient::new)?;
                 client.vector_search(req).await.ok().map(|r| r.into_inner())
             })
             .await;

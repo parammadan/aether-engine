@@ -7,12 +7,12 @@ use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::SearchRequest;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = std::env::args().nth(1).expect("usage: shard_query <addr> [query] [limit]");
     let query = std::env::args().nth(2).unwrap_or_else(|| "synthetica".to_string());
     let limit: u32 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(3);
 
-    let mut client = ShardSearchClient::connect(format!("http://{addr}")).await?;
+    let mut client = ShardSearchClient::new(common::net::channel(&addr).await?);
     let resp = client.search(SearchRequest { query, limit }).await?.into_inner();
 
     println!("total_matched={}", resp.total_matched);

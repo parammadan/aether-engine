@@ -47,8 +47,8 @@ impl Coordinators {
         &self,
     ) -> Option<CoordinatorClient<tonic::transport::Channel>> {
         for addr in self.0.iter() {
-            if let Ok(c) = CoordinatorClient::connect(format!("http://{addr}")).await {
-                return Some(c);
+            if let Ok(c) = common::net::channel(addr).await {
+                return Some(CoordinatorClient::new(c));
             }
         }
         None
@@ -84,16 +84,14 @@ pub async fn register_with_coordinator(
     shard_id: u32,
     role: NodeRole,
 ) -> Result<u32, ClusterError> {
-    let endpoint = format!("http://{coordinator_addr}");
-
     // Retry connect: nodes and coordinator start independently, in any order.
     let mut client = {
         let mut last_err = None;
         let mut client = None;
         for _ in 0..20 {
-            match CoordinatorClient::connect(endpoint.clone()).await {
+            match common::net::channel(coordinator_addr).await {
                 Ok(c) => {
-                    client = Some(c);
+                    client = Some(CoordinatorClient::new(c));
                     break;
                 }
                 Err(e) => {
@@ -157,8 +155,9 @@ pub async fn run_heartbeat(
         // proving aliveness to one says nothing to the others. A dead replica just skips
         // its slot this tick.
         for coordinator_addr in coordinators.addrs() {
-            let Ok(mut client) =
-                CoordinatorClient::connect(format!("http://{coordinator_addr}")).await
+            let Ok(mut client) = common::net::channel(coordinator_addr)
+                .await
+                .map(CoordinatorClient::new)
             else {
                 continue; // this coordinator unreachable this tick; the rest still get theirs
             };

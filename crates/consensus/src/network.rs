@@ -71,9 +71,14 @@ impl GrpcRaftClient {
         E: std::error::Error + serde::de::DeserializeOwned,
     {
         // Connect per call; tonic reconnect/pooling is an optimization for later.
-        let mut client = RaftTransportClient::connect(format!("http://{}", self.addr))
+        // (common::net::channel carries the cluster's mTLS policy.)
+        let mut client = common::net::channel(&self.addr)
             .await
-            .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
+            .map(RaftTransportClient::new)
+            .map_err(|e| {
+                let e = std::io::Error::other(e.to_string());
+                RPCError::Unreachable(Unreachable::new(&e))
+            })?;
 
         let payload = RaftPayload {
             data: serde_json::to_vec(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?,

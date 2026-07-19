@@ -63,7 +63,7 @@ pub async fn replicate_to_followers(
     for addr in followers {
         let request = ReplicateRequest { documents: documents.clone(), shard_id };
         set.spawn(async move {
-            match ReplicationClient::connect(format!("http://{addr}")).await {
+            match common::net::channel(&addr).await.map(ReplicationClient::new) {
                 Ok(mut client) => {
                     if let Err(e) = client.replicate(request).await {
                         eprintln!("replication: follower {addr} rejected batch: {e}");
@@ -92,7 +92,9 @@ pub async fn run_replication(
 
 /// Ask the coordinator which followers serve this shard.
 async fn discover_followers(coordinator_addr: &str, shard_id: u32) -> Vec<String> {
-    let Ok(mut client) = CoordinatorClient::connect(format!("http://{coordinator_addr}")).await
+    let Ok(mut client) = common::net::channel(coordinator_addr)
+        .await
+        .map(CoordinatorClient::new)
     else {
         return Vec::new();
     };

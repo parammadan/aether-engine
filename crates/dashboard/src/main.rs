@@ -61,6 +61,7 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    common::net::install_crypto();
     let shard_count: u32 = env_or("AETHER_SHARD_COUNT", 2);
     let http_addr: String =
         std::env::var("AETHER_DASHBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
