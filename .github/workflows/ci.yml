@@ -24,6 +24,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # S3-compatible endpoint so the snapshot disaster-recovery path (upload, cold-boot
+      # fetch) is exercised on EVERY push — never only in a gated live test.
+      - name: Start MinIO (S3 tier for snapshot tests)
+        run: docker run -d --name minio -p 9000:9000 minio/minio server /data
+
       # These two are the gate: a compile break anywhere in the workspace — including
       # test targets — fails this job loudly. --locked pins the committed Cargo.lock.
       - name: Build (workspace, all targets)
@@ -31,6 +36,12 @@ jobs:
 
       - name: Test (workspace)
         run: cargo test --workspace --locked
+        env:
+          AETHER_S3_ENDPOINT: http://127.0.0.1:9000
+          AETHER_S3_BUCKET: aether-ci
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_REGION: us-east-1
 
       # Advisory for now: the tree has pre-existing warnings to triage. Once they are
       # addressed, tighten this to `-- -D warnings` so lints gate too.

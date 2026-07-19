@@ -162,6 +162,10 @@ pub struct StateMachineStore {
     /// When set, snapshots are persisted here (tmp -> atomic rename) and the latest one is
     /// loaded at construction — restart = latest snapshot + WAL tail replay.
     snap_dir: Option<std::path::PathBuf>,
+    /// Optional S3 tier: snapshots are uploaded after they are built, and a cold boot with
+    /// no local state fetches the newest object. Local disk owns the log; S3 owns recovery
+    /// points (it has no fsync semantics, so it is exactly wrong for a WAL).
+    s3: Option<Arc<super::s3::SnapshotS3>>,
 }
 
 /// On-disk snapshot format: the raft meta (last applied id + membership) plus the
@@ -178,6 +182,7 @@ impl StateMachineStore {
             store,
             inner: Arc::new(Mutex::new(SmInner::default())),
             snap_dir: None,
+            s3: None,
         }
     }
 
@@ -193,6 +198,7 @@ impl StateMachineStore {
             store,
             inner: Arc::new(Mutex::new(SmInner::default())),
             snap_dir: Some(dir.clone()),
+            s3: None,
         };
         if let Some((meta, data)) = Self::load_latest(&dir)? {
             let decoded = common::pb::ReplicateRequest::decode(data.as_slice()).unwrap_or_default();
@@ -203,6 +209,47 @@ impl StateMachineStore {
             inner.membership = meta.last_membership.clone();
             inner.snapshot = Some(StoredSnapshot { meta, data });
             println!("snapshot: restored {restored} documents from disk");
+        }
+        Ok(sm)
+    }
+
+    /// Fully durable open: local snapshot restore first; if the local tier is empty and an
+    /// S3 tier is configured, cold-boot from the newest object (and re-persist it locally).
+    /// Chain: local -> S3 -> empty.
+    pub async fn open_durable(
+        store: Arc<RwLock<ShardStore>>,
+        dir: std::path::PathBuf,
+        s3: Option<Arc<super::s3::SnapshotS3>>,
+    ) -> std::io::Result<Self> {
+        let mut sm = Self::with_snapshot_dir(store, dir)?;
+        sm.s3 = s3;
+
+        let has_local = sm.inner.lock().unwrap().snapshot.is_some();
+        if !has_local {
+            if let Some(s3) = sm.s3.clone() {
+                if let Some(bytes) = s3.latest().await {
+                    match bincode::deserialize::<SnapshotFile>(&bytes) {
+                        Ok(file) => {
+                            let decoded = common::pb::ReplicateRequest::decode(file.data.as_slice())
+                                .unwrap_or_default();
+                            let restored = decoded.documents.len();
+                            sm.store.write().unwrap().replace_all(decoded.documents);
+                            {
+                                let mut inner = sm.inner.lock().unwrap();
+                                inner.last_applied = file.meta.last_log_id;
+                                inner.membership = file.meta.last_membership.clone();
+                                inner.snapshot = Some(StoredSnapshot {
+                                    meta: file.meta.clone(),
+                                    data: file.data.clone(),
+                                });
+                            }
+                            sm.persist(&file.meta, &file.data); // re-seed the local tier
+                            println!("snapshot: cold-booted {restored} documents from s3");
+                        }
+                        Err(e) => eprintln!("s3: undecodable snapshot ignored: {e}"),
+                    }
+                }
+            }
         }
         Ok(sm)
     }
@@ -276,16 +323,25 @@ impl StateMachineStore {
 impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
         let data = self.encode_all_docs();
-        let mut inner = self.inner.lock().unwrap();
-        inner.snapshot_seq += 1;
-        let meta = SnapshotMeta {
-            last_log_id: inner.last_applied,
-            last_membership: inner.membership.clone(),
-            snapshot_id: format!("snap-{}", inner.snapshot_seq),
+        // Lexically scoped lock: the guard must be provably gone before the S3 await below.
+        let meta = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.snapshot_seq += 1;
+            let meta = SnapshotMeta {
+                last_log_id: inner.last_applied,
+                last_membership: inner.membership.clone(),
+                snapshot_id: format!("snap-{}", inner.snapshot_seq),
+            };
+            inner.snapshot = Some(StoredSnapshot { meta: meta.clone(), data: data.clone() });
+            meta
         };
-        inner.snapshot = Some(StoredSnapshot { meta: meta.clone(), data: data.clone() });
-        drop(inner);
         self.persist(&meta, &data);
+        if let Some(s3) = &self.s3 {
+            let index = meta.last_log_id.map(|l| l.index).unwrap_or(0);
+            let file = SnapshotFile { meta: meta.clone(), data: data.clone() };
+            let bytes = bincode::serialize(&file).expect("snapshot serializes");
+            s3.upload(&format!("snap-{index:020}.bin"), bytes).await;
+        }
         Ok(Snapshot {
             meta,
             snapshot: Box::new(Cursor::new(data)),

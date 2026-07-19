@@ -130,7 +130,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(dir) => {
                 let dir = std::path::PathBuf::from(dir);
                 let log_store = WalLogStore::open(&dir).map_err(|e| e.to_string())?;
-                let sm = StateMachineStore::with_snapshot_dir(index.clone(), dir.join("snapshots"))
+                // Optional S3 snapshot tier (AETHER_S3_BUCKET): uploads after each build,
+                // cold-boots from the newest object when the local tier is empty.
+                let s3 = shard_node::raft::s3::SnapshotS3::from_env().await.map(Arc::new);
+                let sm = StateMachineStore::open_durable(index.clone(), dir.join("snapshots"), s3)
+                    .await
                     .map_err(|e| e.to_string())?;
                 println!("raft storage: durable at {}", dir.display());
                 Raft::new(my_raft_id, config, GrpcRaftNetworkFactory, log_store, sm)

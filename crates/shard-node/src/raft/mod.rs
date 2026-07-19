@@ -20,6 +20,7 @@
 
 pub mod bootstrap;
 pub mod reconcile;
+pub mod s3;
 pub mod network;
 pub mod service;
 pub mod storage;

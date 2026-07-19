@@ -22,6 +22,8 @@ hnsw_rs = "0.3"
 openraft = { version = "0.9.24", features = ["serde", "storage-v2"] }
 bincode = "1"
 crc32fast = "1.5.0"
+aws-config = "1.9.0"
+aws-sdk-s3 = "1.138.1"
 
 [features]
 # Learned-model embeddings (ONNX Runtime) — select at runtime with AETHER_EMBEDDER=onnx.
