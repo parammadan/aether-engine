@@ -48,16 +48,25 @@ AMI=$(aws ssm get-parameter --region "$REGION" \
   --query Parameter.Value --output text)
 IDS=()
 for NAME in aether-coordinator aether-m0 aether-m1 aether-m2; do
-  ID=$(aws ec2 run-instances --region "$REGION" --image-id "$AMI" --instance-type "$TYPE" \
-    --key-name "$KEY_NAME" --security-group-ids "$SG" \
-    --tag-specifications "ResourceType=instance,Tags=[{Key=aether,Value=1},{Key=Name,Value=$NAME}]" \
-    --query 'Instances[0].InstanceId' --output text)
+  # Idempotent: adopt an already-running instance with this Name (re-run after a partial failure).
+  ID=$(aws ec2 describe-instances --region "$REGION" \
+    --filters "Name=tag:Name,Values=$NAME" "Name=tag:aether,Values=1" \
+              "Name=instance-state-name,Values=pending,running" \
+    --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null || true)
+  if [ "$ID" = "None" ] || [ -z "$ID" ]; then
+    ID=$(aws ec2 run-instances --region "$REGION" --image-id "$AMI" --instance-type "$TYPE" \
+      --key-name "$KEY_NAME" --security-group-ids "$SG" \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=aether,Value=1},{Key=Name,Value=$NAME}]" \
+      --query 'Instances[0].InstanceId' --output text)
+    echo "  $NAME -> $ID (launched)"
+  else
+    echo "  $NAME -> $ID (adopted)"
+  fi
   IDS+=("$ID")
-  echo "  $NAME -> $ID"
 done
 aws ec2 wait instance-running --region "$REGION" --instance-ids "${IDS[@]}"
 
-declare -A PUB PRIV
+PUB=(); PRIV=()   # indexed arrays: macOS ships bash 3.2, no associative arrays
 for i in 0 1 2 3; do
   read -r P V < <(aws ec2 describe-instances --region "$REGION" --instance-ids "${IDS[$i]}" \
     --query 'Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]' --output text)
