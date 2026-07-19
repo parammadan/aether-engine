@@ -25,11 +25,21 @@ use crate::registry::Registry;
 /// nodes may register concurrently (writes) while query fan-out reads the shard map.
 pub struct CoordinatorService {
     registry: Arc<RwLock<Registry>>,
+    /// When this coordinator is a replica of a state group, operator-intent mutations
+    /// (reassign, drain) commit through it instead of writing the registry directly.
+    control: Option<Arc<crate::control::ControlPlane>>,
 }
 
 impl CoordinatorService {
     pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
-        Self { registry }
+        Self { registry, control: None }
+    }
+
+    pub fn with_control(
+        registry: Arc<RwLock<Registry>>,
+        control: Arc<crate::control::ControlPlane>,
+    ) -> Self {
+        Self { registry, control: Some(control) }
     }
 }
 
@@ -162,6 +172,46 @@ impl Coordinator for CoordinatorService {
         request: Request<DrainRequest>,
     ) -> Result<Response<DrainResponse>, Status> {
         let node_id = request.into_inner().node_id;
+
+        // Replicated authority: validate against the LOCAL view (any replica's view knows
+        // every live node, since nodes register with all coordinators), then commit the
+        // marker through the group so it survives this coordinator's death.
+        if let Some(control) = &self.control {
+            let known = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?
+                .knows_node(&node_id);
+            if !known {
+                return Ok(Response::new(DrainResponse {
+                    ok: false,
+                    message: format!("unknown node '{node_id}'"),
+                }));
+            }
+            let cmd = crate::control::Command::DrainNode { node_id: node_id.clone() };
+            match control.propose(&cmd).await {
+                Ok(()) => {
+                    println!("coordinator: '{node_id}' marked draining (replicated)");
+                    return Ok(Response::new(DrainResponse {
+                        ok: true,
+                        message: format!("'{node_id}' marked draining; its group leader will remove it"),
+                    }));
+                }
+                Err(crate::control::ProposeError::Leader(addr)) => {
+                    // A follower took the call: forward the whole RPC to the leader.
+                    let mut client = common::pb::coordinator_client::CoordinatorClient::connect(
+                        format!("http://{addr}"),
+                    )
+                    .await
+                    .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
+                    return client.drain_node(DrainRequest { node_id }).await;
+                }
+                Err(crate::control::ProposeError::Unavailable(msg)) => {
+                    return Err(Status::unavailable(msg));
+                }
+            }
+        }
+
         let mut registry = self
             .registry
             .write()
@@ -221,6 +271,44 @@ impl Coordinator for CoordinatorService {
         request: Request<ReassignVShardRequest>,
     ) -> Result<Response<ReassignVShardResponse>, Status> {
         let req = request.into_inner();
+
+        // Replicated authority: validate here (table length + N are the same on every
+        // replica), commit through the group, forward to the leader if we're a follower.
+        if let Some(control) = &self.control {
+            let valid = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?
+                .validate_reassign(req.vshard, req.group);
+            if let Err(message) = valid {
+                return Ok(Response::new(ReassignVShardResponse { ok: false, message }));
+            }
+            let cmd = crate::control::Command::ReassignVShard { vshard: req.vshard, group: req.group };
+            match control.propose(&cmd).await {
+                Ok(()) => {
+                    println!(
+                        "coordinator: vshard {} reassigned to group {} (replicated)",
+                        req.vshard, req.group
+                    );
+                    return Ok(Response::new(ReassignVShardResponse {
+                        ok: true,
+                        message: format!("vshard {} -> group {}", req.vshard, req.group),
+                    }));
+                }
+                Err(crate::control::ProposeError::Leader(addr)) => {
+                    let mut client = common::pb::coordinator_client::CoordinatorClient::connect(
+                        format!("http://{addr}"),
+                    )
+                    .await
+                    .map_err(|e| Status::unavailable(format!("control leader at {addr} unreachable: {e}")))?;
+                    return client.reassign_v_shard(req).await;
+                }
+                Err(crate::control::ProposeError::Unavailable(msg)) => {
+                    return Err(Status::unavailable(msg));
+                }
+            }
+        }
+
         let mut registry = self
             .registry
             .write()

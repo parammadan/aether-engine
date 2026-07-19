@@ -8,6 +8,11 @@
 //!   AETHER_COORDINATOR_ADDR       listen address        (default 127.0.0.1:50050)
 //!   AETHER_SHARD_COUNT            N (shard count)        (default 3)
 //!   AETHER_LIVENESS_TIMEOUT_SECS  drop a node unseen for this long (default 15)
+//!   AETHER_CONTROL_ID             this replica's id in the coordinator state group
+//!   AETHER_CONTROL_PEERS          "1=host:port,2=host:port,..." (all replicas' gRPC
+//!                                 addresses; with CONTROL_ID, operator intent —
+//!                                 placement + drains — replicates across the group)
+//!   AETHER_DATA_DIR               durable raft log + snapshots for the state group
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -34,10 +39,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // AETHER_VSHARDS > 0 enables virtual-shard placement (V fixed forever; load moves by
     // reassigning whole virtual shards between groups, never by changing the modulus).
     let vshards: u32 = env_or("AETHER_VSHARDS", 0);
+    let control_mode = std::env::var("AETHER_CONTROL_ID").is_ok();
     let mut registry_inner = Registry::new(shard_count).with_liveness_timeout(liveness_timeout);
     if vshards > 0 {
         registry_inner = registry_inner.with_vshards(vshards);
         println!("virtual shards: {vshards} across {shard_count} groups");
+    }
+    if control_mode {
+        // The authoritative state now belongs to the group; local view-driven cleanup off.
+        registry_inner = registry_inner.with_replicated_authority();
     }
     let registry = Arc::new(RwLock::new(registry_inner));
 
@@ -66,16 +76,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let service = CoordinatorService::new(registry);
+    // Coordinator state group: with AETHER_CONTROL_ID/PEERS set, this replica joins a
+    // raft group replicating operator intent (vshard table + drain set), and its gRPC
+    // server also carries the group's transport.
+    let control = coordinator::control::ControlPlane::from_env(registry.clone()).await?;
+
     println!(
         "aether-coordinator serving on {addr}; cluster N={shard_count}; liveness timeout {}s",
         liveness_timeout.as_secs()
     );
 
-    Server::builder()
-        .add_service(CoordinatorServer::new(service))
-        .serve(addr)
-        .await?;
+    match control {
+        Some(control) => {
+            let control = Arc::new(control);
+            let transport = consensus::service::RaftTransportService::new(control.raft.clone());
+            let service = CoordinatorService::with_control(registry, control);
+            Server::builder()
+                .add_service(CoordinatorServer::new(service))
+                .add_service(common::pb::raft_transport_server::RaftTransportServer::new(transport))
+                .serve(addr)
+                .await?;
+        }
+        None => {
+            let service = CoordinatorService::new(registry);
+            Server::builder()
+                .add_service(CoordinatorServer::new(service))
+                .serve(addr)
+                .await?;
+        }
+    }
 
     Ok(())
 }

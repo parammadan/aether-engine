@@ -9,6 +9,11 @@ license.workspace = true
 
 [dependencies]
 common = { path = "../common" }
+# The coordinator state group (replicated operator intent) runs on the shared raft machinery.
+consensus = { path = "../consensus" }
+openraft = { version = "0.9.24", features = ["serde", "storage-v2"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
 tokio.workspace = true
 tonic.workspace = true
 prost.workspace = true

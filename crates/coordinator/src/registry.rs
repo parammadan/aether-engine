@@ -72,6 +72,10 @@ pub struct Registry {
     /// cluster runs plain `hash % N` placement. V is fixed at construction, forever; load
     /// moves by reassigning entries, never by changing the modulus.
     vshards: Vec<u32>,
+    /// True when the authoritative state (vshard table + drain set) is replicated across a
+    /// coordinator group. Local view-driven code must then never mutate it: every replica's
+    /// copy is owned by consensus, and a local edit is a divergence.
+    authority_replicated: bool,
 }
 
 impl Registry {
@@ -84,6 +88,7 @@ impl Registry {
             followers: HashMap::new(),
             draining: std::collections::HashSet::new(),
             vshards: Vec::new(),
+            authority_replicated: false,
         }
     }
 
@@ -119,6 +124,56 @@ impl Registry {
         }
         self.vshards[vshard as usize] = group;
         Ok(())
+    }
+
+    /// Check a reassignment WITHOUT applying it — the validation half of
+    /// [`Registry::reassign_vshard`], for callers that route the mutation through
+    /// consensus after validating locally.
+    pub fn validate_reassign(&self, vshard: u32, group: u32) -> Result<(), String> {
+        if self.vshards.is_empty() {
+            return Err("virtual shards are not enabled".to_string());
+        }
+        if vshard as usize >= self.vshards.len() {
+            return Err(format!("vshard {vshard} out of range (V={})", self.vshards.len()));
+        }
+        if group >= self.shard_count {
+            return Err(format!("group {group} out of range (N={})", self.shard_count));
+        }
+        Ok(())
+    }
+
+    /// Mark this registry's authoritative state (vshard table + drain set) as owned by a
+    /// replication layer. Local view-driven cleanup of that state is disabled.
+    pub fn with_replicated_authority(mut self) -> Self {
+        self.authority_replicated = true;
+        self
+    }
+
+    /// Insert a drain marker unconditionally — the deterministic apply half of
+    /// [`Registry::mark_draining`]. Replicas apply committed intent as-is; whether the
+    /// node is currently *known* is a property of each replica's local view and must not
+    /// influence the outcome.
+    pub fn apply_drain_marker(&mut self, node_id: &str) {
+        self.draining.insert(node_id.to_string());
+    }
+
+    /// Whether this coordinator's view currently knows the node (pre-proposal validation).
+    pub fn knows_node(&self, node_id: &str) -> bool {
+        self.leaders.values().any(|n| n.node_id == node_id)
+            || self.followers.values().flatten().any(|n| n.node_id == node_id)
+    }
+
+    /// The authoritative state, in a deterministic order (for snapshots).
+    pub fn authority(&self) -> (Vec<u32>, Vec<String>) {
+        let mut draining: Vec<String> = self.draining.iter().cloned().collect();
+        draining.sort();
+        (self.vshards.clone(), draining)
+    }
+
+    /// Replace the authoritative state wholesale (snapshot restore).
+    pub fn set_authority(&mut self, vshards: Vec<u32>, draining: Vec<String>) {
+        self.vshards = vshards;
+        self.draining = draining.into_iter().collect();
     }
 
     pub fn shard_count(&self) -> u32 {
@@ -279,9 +334,13 @@ impl Registry {
             }
         }
 
-        // A reaped node's drain marker has served its purpose.
-        for node in &removed {
-            self.draining.remove(&node.node_id);
+        // A reaped node's drain marker has served its purpose — but only when this
+        // coordinator OWNS the drain set. Replicated authority is consensus's to mutate;
+        // a local reap-triggered edit would silently diverge the replicas.
+        if !self.authority_replicated {
+            for node in &removed {
+                self.draining.remove(&node.node_id);
+            }
         }
 
         removed
@@ -336,8 +395,7 @@ impl Registry {
     /// node isn't known. Sticky: survives re-registration; cleaned up when the node is
     /// finally reaped.
     pub fn mark_draining(&mut self, node_id: &str) -> bool {
-        let known = self.leaders.values().any(|n| n.node_id == node_id)
-            || self.followers.values().flatten().any(|n| n.node_id == node_id);
+        let known = self.knows_node(node_id);
         if known {
             self.draining.insert(node_id.to_string());
         }
