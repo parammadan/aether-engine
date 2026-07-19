@@ -16,6 +16,7 @@ pub mod pb {
 }
 
 pub mod client;
+pub mod net;
 pub mod embed;
 #[cfg(feature = "onnx")]
 pub mod embed_onnx;
