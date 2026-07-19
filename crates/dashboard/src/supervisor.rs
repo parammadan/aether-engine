@@ -56,7 +56,7 @@ impl Supervisor {
         Ok(())
     }
 
-    fn spawn_shard_node(&self, node_id: &str, shard_id: u32, role: &str) -> io::Result<()> {
+    fn spawn_shard_node(&self, node_id: &str, shard_id: u32, role: &str, joining: bool) -> io::Result<()> {
         let port = self.next_port.fetch_add(1, Ordering::SeqCst);
         let mut cmd = Command::new(Self::bin("shard-node"));
         cmd.env("AETHER_SHARD_ADDR", format!("127.0.0.1:{port}"))
@@ -73,6 +73,11 @@ impl Supervisor {
         }
         if self.raft {
             cmd.env("AETHER_CONSENSUS", "raft").env("AETHER_GROUP_SIZE", "3");
+            if joining {
+                // A joiner never bootstraps; the live group's leader admits it
+                // (learner -> voter) via membership change.
+                cmd.env("AETHER_RAFT_JOIN", "1");
+            }
         }
         let child = cmd.spawn()?;
         self.children.lock().unwrap().insert(node_id.to_string(), child);
@@ -88,15 +93,15 @@ impl Supervisor {
             if self.raft {
                 for member in 0..3 {
                     let node_id = format!("shard{shard}-m{member}");
-                    self.spawn_shard_node(&node_id, shard, "follower")?;
+                    self.spawn_shard_node(&node_id, shard, "follower", false)?;
                     spawned.push(node_id);
                 }
             } else {
                 let leader = format!("shard{shard}-leader");
-                self.spawn_shard_node(&leader, shard, "leader")?;
+                self.spawn_shard_node(&leader, shard, "leader", false)?;
                 spawned.push(leader);
                 let follower = format!("shard{shard}-f0");
-                self.spawn_shard_node(&follower, shard, "follower")?;
+                self.spawn_shard_node(&follower, shard, "follower", false)?;
                 spawned.push(follower);
             }
         }
@@ -108,7 +113,7 @@ impl Supervisor {
     pub fn add_follower(&self, shard_id: u32) -> io::Result<String> {
         let seq = self.follower_seq.fetch_add(1, Ordering::SeqCst);
         let node_id = format!("shard{shard_id}-f{seq}");
-        self.spawn_shard_node(&node_id, shard_id, "follower")?;
+        self.spawn_shard_node(&node_id, shard_id, "follower", self.raft)?;
         Ok(node_id)
     }
 

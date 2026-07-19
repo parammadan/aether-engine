@@ -243,9 +243,8 @@ async fn api_add_follower(
     match app.supervisor.add_follower(shard_id) {
         Ok(node_id) => {
             if app.supervisor.is_raft() {
-                // Registers and appears in the map, but joining the CONSENSUS group needs a
-                // membership change — that's the live-rebalancing work, stated honestly.
-                app.push_event(format!("spawned {node_id} (registered; outside raft membership)"));
+                // The group's leader will admit it live: learner (catch-up) -> voter.
+                app.push_event(format!("spawned {node_id} — joining the raft group"));
             } else {
                 app.push_event(format!("spawned {node_id}"));
             }

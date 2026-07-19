@@ -87,7 +87,10 @@ members, since a group of 2 cannot survive a failure). Members discover their gr
 the coordinator and the member with the smallest raft id initializes it; the **elected**
 leader ingests, writing every batch through the log so it commits into all members' stores;
 heartbeats report raft leadership, so the coordinator's shard map is a *view* of raft state
-rather than an authority. Verified in-process (election, quorum-searchable writes,
+rather than an authority. Groups grow live: a joining node (started with
+`AETHER_RAFT_JOIN=1`) is admitted by the elected leader as a learner — catching up from
+replication with zero quorum impact — then promoted to voter, while queries and ingestion
+continue uninterrupted. Verified in-process (election, quorum-searchable writes,
 re-election) and across real processes: three shard-node binaries form a group, the elected
 leader is SIGKILLed, the survivors re-elect, and query routing follows the new leader.
 

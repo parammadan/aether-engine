@@ -155,12 +155,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Consensus-managed: form the group, then the ELECTED leader ingests through the log.
         Some((raft, my_raft_id)) => {
             let coord_addr = coordinator.clone().ok_or("AETHER_CONSENSUS=raft requires AETHER_COORDINATOR_ADDR")?;
-            let boot_raft = raft.clone();
             let my_id = *my_raft_id;
-            tokio::spawn(async move {
-                let members = wait_for_group(&coord_addr, shard_index, group_size).await;
-                bootstrap_group(&boot_raft, my_id, members).await;
-            });
+
+            // A JOINING member (AETHER_RAFT_JOIN=1) never bootstraps: it stays uninitialized
+            // (an uninitialized raft doesn't campaign, so it can't disturb the live group)
+            // and waits for the group's leader to admit it as a learner and promote it.
+            let joining = std::env::var("AETHER_RAFT_JOIN").map(|v| v == "1").unwrap_or(false);
+            if !joining {
+                let boot_raft = raft.clone();
+                let boot_coord = coord_addr.clone();
+                tokio::spawn(async move {
+                    let members = wait_for_group(&boot_coord, shard_index, group_size).await;
+                    bootstrap_group(&boot_raft, my_id, members).await;
+                });
+            }
+
+            // Every member runs the reconciler; it acts only while leader, admitting newly
+            // registered members into the group live (learner -> voter).
+            tokio::spawn(shard_node::raft::reconcile::run_membership_reconciler(
+                raft.clone(),
+                my_id,
+                coord_addr,
+                shard_index,
+            ));
+
             if ingest_on {
                 tokio::spawn(run_leader_ingestion(
                     build_source(&node_id),

@@ -19,6 +19,7 @@
 //! raft-managed shard runs at least 3 members — quorum 2 of 3 rides out one death.
 
 pub mod bootstrap;
+pub mod reconcile;
 pub mod network;
 pub mod service;
 pub mod storage;
