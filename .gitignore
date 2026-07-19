@@ -43,3 +43,8 @@ Thumbs.db
 # ---- Model weights (fetched by scripts/fetch-model.sh, never committed) ----
 /models
 *.onnx
+
+# ---- Deployment artifacts (never committed) ----
+deploy/.keys/
+deploy/target-linux/
+deploy/cluster.json
