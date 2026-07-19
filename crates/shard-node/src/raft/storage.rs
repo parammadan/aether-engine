@@ -159,6 +159,17 @@ struct SmInner {
 pub struct StateMachineStore {
     store: Arc<RwLock<ShardStore>>,
     inner: Arc<Mutex<SmInner>>,
+    /// When set, snapshots are persisted here (tmp -> atomic rename) and the latest one is
+    /// loaded at construction — restart = latest snapshot + WAL tail replay.
+    snap_dir: Option<std::path::PathBuf>,
+}
+
+/// On-disk snapshot format: the raft meta (last applied id + membership) plus the
+/// prost-encoded document dump. Bincode-framed as one file, replaced atomically.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnapshotFile {
+    meta: SnapshotMeta<NodeId, BasicNode>,
+    data: Vec<u8>,
 }
 
 impl StateMachineStore {
@@ -166,6 +177,93 @@ impl StateMachineStore {
         Self {
             store,
             inner: Arc::new(Mutex::new(SmInner::default())),
+            snap_dir: None,
+        }
+    }
+
+    /// Durable variant: persists every snapshot under `dir` and, at construction, restores
+    /// the newest one (documents into the store, last-applied + membership into the state
+    /// machine) so openraft resumes log replay from the snapshot point.
+    pub fn with_snapshot_dir(
+        store: Arc<RwLock<ShardStore>>,
+        dir: std::path::PathBuf,
+    ) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&dir)?;
+        let sm = Self {
+            store,
+            inner: Arc::new(Mutex::new(SmInner::default())),
+            snap_dir: Some(dir.clone()),
+        };
+        if let Some((meta, data)) = Self::load_latest(&dir)? {
+            let decoded = common::pb::ReplicateRequest::decode(data.as_slice()).unwrap_or_default();
+            let restored = decoded.documents.len();
+            sm.store.write().unwrap().replace_all(decoded.documents);
+            let mut inner = sm.inner.lock().unwrap();
+            inner.last_applied = meta.last_log_id;
+            inner.membership = meta.last_membership.clone();
+            inner.snapshot = Some(StoredSnapshot { meta, data });
+            println!("snapshot: restored {restored} documents from disk");
+        }
+        Ok(sm)
+    }
+
+    fn snapshot_path(dir: &std::path::Path, index: u64) -> std::path::PathBuf {
+        dir.join(format!("snap-{index:020}.bin"))
+    }
+
+    /// Persist a snapshot atomically (tmp -> fsync -> rename) and drop older ones.
+    fn persist(&self, meta: &SnapshotMeta<NodeId, BasicNode>, data: &[u8]) {
+        let Some(dir) = &self.snap_dir else { return };
+        let index = meta.last_log_id.map(|l| l.index).unwrap_or(0);
+        let path = Self::snapshot_path(dir, index);
+        let tmp = path.with_extension("tmp");
+        let file = SnapshotFile { meta: meta.clone(), data: data.to_vec() };
+        let bytes = bincode::serialize(&file).expect("snapshot serializes");
+        let write = (|| -> std::io::Result<()> {
+            std::fs::write(&tmp, &bytes)?;
+            let f = std::fs::File::open(&tmp)?;
+            f.sync_data()?;
+            std::fs::rename(&tmp, &path)?;
+            Ok(())
+        })();
+        match write {
+            Ok(()) => {
+                // Older snapshots are superseded; keep only the newest on disk.
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for e in entries.flatten() {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        if name.starts_with("snap-") && name.ends_with(".bin") && e.path() != path {
+                            let _ = std::fs::remove_file(e.path());
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("snapshot: persist failed (kept in memory): {e}"),
+        }
+    }
+
+    fn load_latest(
+        dir: &std::path::Path,
+    ) -> std::io::Result<Option<(SnapshotMeta<NodeId, BasicNode>, Vec<u8>)>> {
+        let mut newest: Option<(u64, std::path::PathBuf)> = None;
+        for e in std::fs::read_dir(dir)?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(idx) = name.strip_prefix("snap-").and_then(|s| s.strip_suffix(".bin")) {
+                if let Ok(idx) = idx.parse::<u64>() {
+                    if newest.as_ref().map_or(true, |(n, _)| idx > *n) {
+                        newest = Some((idx, e.path()));
+                    }
+                }
+            }
+        }
+        let Some((_, path)) = newest else { return Ok(None) };
+        let bytes = std::fs::read(path)?;
+        match bincode::deserialize::<SnapshotFile>(&bytes) {
+            Ok(f) => Ok(Some((f.meta, f.data))),
+            Err(e) => {
+                eprintln!("snapshot: unreadable snapshot ignored: {e}");
+                Ok(None)
+            }
         }
     }
 
@@ -186,6 +284,8 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
             snapshot_id: format!("snap-{}", inner.snapshot_seq),
         };
         inner.snapshot = Some(StoredSnapshot { meta: meta.clone(), data: data.clone() });
+        drop(inner);
+        self.persist(&meta, &data);
         Ok(Snapshot {
             meta,
             snapshot: Box::new(Cursor::new(data)),
@@ -257,7 +357,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         let mut inner = self.inner.lock().unwrap();
         inner.last_applied = meta.last_log_id;
         inner.membership = meta.last_membership.clone();
-        inner.snapshot = Some(StoredSnapshot { meta: meta.clone(), data });
+        inner.snapshot = Some(StoredSnapshot { meta: meta.clone(), data: data.clone() });
+        drop(inner);
+        self.persist(meta, &data);
         Ok(())
     }
 

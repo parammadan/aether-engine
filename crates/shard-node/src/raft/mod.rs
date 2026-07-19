@@ -23,6 +23,7 @@ pub mod reconcile;
 pub mod network;
 pub mod service;
 pub mod storage;
+pub mod wal;
 
 use std::io::Cursor;
 
@@ -56,10 +57,18 @@ pub type Raft = openraft::Raft<TypeConfig>;
 /// Raft timing tuned for small, chatty LAN groups (and fast tests/demos): 100ms heartbeats,
 /// elections after 300–600ms of silence.
 pub fn raft_config() -> openraft::Config {
-    openraft::Config {
+    let mut config = openraft::Config {
         heartbeat_interval: 100,
         election_timeout_min: 300,
         election_timeout_max: 600,
         ..Default::default()
+    };
+    // Snapshot cadence (log entries between snapshots) — smaller values bound WAL growth
+    // and speed cold recovery at the cost of more frequent snapshot writes.
+    if let Some(n) = std::env::var("AETHER_SNAPSHOT_LOGS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        if n > 0 {
+            config.snapshot_policy = openraft::SnapshotPolicy::LogsSinceLast(n);
+        }
     }
+    config
 }

@@ -47,6 +47,7 @@ use shard_node::raft::bootstrap::{bootstrap_group, raft_node_id, run_leader_inge
 use shard_node::raft::network::GrpcRaftNetworkFactory;
 use shard_node::raft::service::RaftTransportService;
 use shard_node::raft::storage::{LogStore, StateMachineStore};
+use shard_node::raft::wal::WalLogStore;
 use shard_node::raft::{raft_config, Raft};
 use shard_node::replication::{run_replication, ReplicationService};
 use shard_node::server::ShardSearchService;
@@ -119,17 +120,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let index = Arc::new(RwLock::new(build_store()?));
 
     // Consensus: this member's raft instance (state machine = the same store search reads).
+    // With AETHER_DATA_DIR set, the log/vote live in a local WAL and snapshots persist to
+    // disk, so a restarted member recovers its own state instead of forgetting it — an
+    // in-memory vote isn't just data loss, it's a double-vote safety hole.
     let raft = if raft_mode {
         let my_raft_id = raft_node_id(&node_id);
-        let raft = Raft::new(
-            my_raft_id,
-            Arc::new(raft_config().validate().map_err(|e| e.to_string())?),
-            GrpcRaftNetworkFactory,
-            LogStore::default(),
-            StateMachineStore::new(index.clone()),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let config = Arc::new(raft_config().validate().map_err(|e| e.to_string())?);
+        let raft = match std::env::var("AETHER_DATA_DIR").ok() {
+            Some(dir) => {
+                let dir = std::path::PathBuf::from(dir);
+                let log_store = WalLogStore::open(&dir).map_err(|e| e.to_string())?;
+                let sm = StateMachineStore::with_snapshot_dir(index.clone(), dir.join("snapshots"))
+                    .map_err(|e| e.to_string())?;
+                println!("raft storage: durable at {}", dir.display());
+                Raft::new(my_raft_id, config, GrpcRaftNetworkFactory, log_store, sm)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+            None => Raft::new(
+                my_raft_id,
+                config,
+                GrpcRaftNetworkFactory,
+                LogStore::default(),
+                StateMachineStore::new(index.clone()),
+            )
+            .await
+            .map_err(|e| e.to_string())?,
+        };
         Some((raft, my_raft_id))
     } else {
         None
