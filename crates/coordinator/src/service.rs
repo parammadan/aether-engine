@@ -10,8 +10,9 @@ use common::pb::{
     ClusterStateRequest, ClusterStateResponse, DrainRequest, DrainResponse, HeartbeatRequest,
     HeartbeatResponse,
     ListReplicasRequest, ListReplicasResponse, NodeState, RegisterNodeRequest,
-    RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate, ShardMembersRequest,
-    ShardMembersResponse,
+    RegisterNodeResponse, ReassignVShardRequest, ReassignVShardResponse, SearchRequest,
+    SearchResponse, SearchUpdate, ShardMembersRequest, ShardMembersResponse,
+    VShardAssignments, VShardAssignmentsRequest,
 };
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::ReceiverStream;
@@ -181,7 +182,42 @@ impl Coordinator for CoordinatorService {
         Ok(Response::new(ClusterStateResponse {
             shard_count: registry.shard_count(),
             nodes,
+            vshard_group: registry.vshard_assignments(),
         }))
+    }
+
+    async fn get_v_shard_assignments(
+        &self,
+        _request: Request<VShardAssignmentsRequest>,
+    ) -> Result<Response<VShardAssignments>, Status> {
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        Ok(Response::new(VShardAssignments {
+            group_of: registry.vshard_assignments(),
+        }))
+    }
+
+    async fn reassign_v_shard(
+        &self,
+        request: Request<ReassignVShardRequest>,
+    ) -> Result<Response<ReassignVShardResponse>, Status> {
+        let req = request.into_inner();
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        match registry.reassign_vshard(req.vshard, req.group) {
+            Ok(()) => {
+                println!("coordinator: vshard {} reassigned to group {}", req.vshard, req.group);
+                Ok(Response::new(ReassignVShardResponse {
+                    ok: true,
+                    message: format!("vshard {} -> group {}", req.vshard, req.group),
+                }))
+            }
+            Err(message) => Ok(Response::new(ReassignVShardResponse { ok: false, message })),
+        }
     }
 
     async fn search_stream(

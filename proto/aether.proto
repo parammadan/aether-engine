@@ -229,6 +229,12 @@ service Coordinator {
   // shrink quorum); the group's elected leader executes it, refusing to go below a safe
   // voter count. Combined with a join, this is a live replica relocation.
   rpc DrainNode(DrainRequest) returns (DrainResponse);
+
+  // Virtual-shard placement: nodes poll this to learn which virtual shards their group
+  // serves (ingestion filters by it), and an operator moves load by reassigning a virtual
+  // shard to another group.
+  rpc GetVShardAssignments(VShardAssignmentsRequest) returns (VShardAssignments);
+  rpc ReassignVShard(ReassignVShardRequest) returns (ReassignVShardResponse);
 }
 
 message DrainRequest {
@@ -261,6 +267,30 @@ message NodeState {
 }
 
 message ClusterStateResponse {
-  uint32 shard_count = 1; // N
+  uint32 shard_count = 1; // N (the number of groups)
   repeated NodeState nodes = 2;
+  // Virtual-shard placement, when enabled: index = virtual shard, value = the group serving
+  // it. Placement is hash(icao24) % V with V fixed forever; growth/rebalancing reassigns
+  // whole virtual shards between groups instead of ever changing the modulus.
+  repeated uint32 vshard_group = 3;
+}
+
+// =============================================================================
+// Virtual shards  (placement that can move)
+// =============================================================================
+
+message VShardAssignmentsRequest {}
+
+message VShardAssignments {
+  repeated uint32 group_of = 1; // index = virtual shard, value = owning group; empty = disabled
+}
+
+message ReassignVShardRequest {
+  uint32 vshard = 1;
+  uint32 group = 2;
+}
+
+message ReassignVShardResponse {
+  bool ok = 1;
+  string message = 2;
 }

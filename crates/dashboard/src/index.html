@@ -110,9 +110,13 @@
       if (!byShard.has(n.shard_id)) byShard.set(n.shard_id, []);
       byShard.get(n.shard_id).push(n);
     });
+    const vshardsOf = (shard) => {
+      const owned = (s.vshard_group || []).map((g, v) => g === shard ? v : null).filter(v => v !== null);
+      return owned.length ? ` · vshards ${owned.join(",")}` : "";
+    };
     $("shards").innerHTML = [...byShard.entries()].map(([shard, nodes]) => `
       <div class="shard">
-        <h2>Shard ${shard} · ${nodes.filter(n => n.role === "Leader").length ? "led" : "NO LEADER"} · ${nodes.length} node${nodes.length === 1 ? "" : "s"}</h2>
+        <h2>Shard ${shard} · ${nodes.filter(n => n.role === "Leader").length ? "led" : "NO LEADER"} · ${nodes.length} node${nodes.length === 1 ? "" : "s"}${vshardsOf(shard)}</h2>
         ${nodes.map(n => {
           const st = statusOf(n);
           return `<div class="node">

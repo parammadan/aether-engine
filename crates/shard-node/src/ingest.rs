@@ -28,8 +28,8 @@ use crate::store::ShardStore;
 
 pub type IngestError = Box<dyn std::error::Error + Send + Sync>;
 
-/// This node's shard ownership: it indexes a document only if `hash(icao24) % count == index`.
-/// Passing `None` to [`run_ingestion`] disables filtering (single-node / index everything).
+/// A fixed `hash % N` slice: this node indexes a document only if
+/// `hash(icao24) % count == index`.
 #[derive(Clone, Copy, Debug)]
 pub struct ShardAssignment {
     pub index: u32,
@@ -41,6 +41,63 @@ impl ShardAssignment {
     /// every other node use, so ownership is consistent cluster-wide.
     pub fn owns(&self, icao24: &str) -> bool {
         shard_for(icao24, self.count) == self.index
+    }
+}
+
+/// What this node keeps from the ingest stream.
+#[derive(Clone)]
+pub enum Ownership {
+    /// Everything (single-node).
+    All,
+    /// Fixed `hash % N` placement.
+    Modulo(ShardAssignment),
+    /// Virtual-shard placement: keep a document when the coordinator's table maps its
+    /// virtual shard to this node's group. The table is a live view (refreshed by a
+    /// background poller), so reassigning a virtual shard moves ingestion between groups
+    /// within one refresh — no restarts, and the modulus never changes.
+    Mapped {
+        group: u32,
+        assignments: Arc<RwLock<Vec<u32>>>,
+    },
+}
+
+impl Ownership {
+    pub fn owns(&self, icao24: &str) -> bool {
+        match self {
+            Ownership::All => true,
+            Ownership::Modulo(assignment) => assignment.owns(icao24),
+            Ownership::Mapped { group, assignments } => {
+                let table = assignments.read().expect("assignments lock poisoned");
+                // Before the first fetch (empty table) own nothing: briefly ingesting
+                // nothing is safe; ingesting the wrong slice is not.
+                let Some(v) = NonZeroU32::new(table.len() as u32) else { return false };
+                let vshard = common::shard::vshard_for(icao24, v);
+                table.get(vshard as usize).copied() == Some(*group)
+            }
+        }
+    }
+}
+
+/// Keep a live copy of the coordinator's virtual-shard table (used by
+/// [`Ownership::Mapped`]). Polls every couple of seconds; a fetch failure keeps the last
+/// known table (stale placement beats no placement).
+pub async fn run_vshard_view(coordinator_addr: String, assignments: Arc<RwLock<Vec<u32>>>) {
+    let endpoint = format!("http://{coordinator_addr}");
+    let mut ticker = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        ticker.tick().await;
+        let Ok(mut client) =
+            common::pb::coordinator_client::CoordinatorClient::connect(endpoint.clone()).await
+        else {
+            continue;
+        };
+        if let Ok(resp) = client
+            .get_v_shard_assignments(common::pb::VShardAssignmentsRequest {})
+            .await
+        {
+            let table = resp.into_inner().group_of;
+            *assignments.write().expect("assignments lock poisoned") = table;
+        }
     }
 }
 
@@ -94,8 +151,8 @@ impl FlightSource for SyntheticSource {
 }
 
 /// Run the ingestion loop: poll `source` every `poll_interval`, inserting each snapshot into
-/// `index`. When `shard` is `Some`, only documents this shard owns are indexed — so every
-/// node can pull the full OpenSky snapshot but keep only its `hash(icao24) % N` slice.
+/// `index`, keeping only the documents this node owns per `ownership` (everything, a fixed
+/// `hash % N` slice, or a live virtual-shard mapping).
 /// When `replicate_tx` is `Some`, the documents actually indexed from each batch are also
 /// forwarded on that channel (a leader replicates them to its followers).
 /// Runs until `max_polls` is reached (`None` = forever, the production case); `max_polls`
@@ -105,7 +162,7 @@ pub async fn run_ingestion<S: FlightSource + 'static>(
     index: Arc<RwLock<ShardStore>>,
     poll_interval: Duration,
     max_polls: Option<usize>,
-    shard: Option<ShardAssignment>,
+    ownership: Ownership,
     replicate_tx: Option<tokio::sync::mpsc::Sender<Vec<FlightDocument>>>,
 ) {
     // Small bounded buffer: a few snapshots of slack, then backpressure kicks in.
@@ -121,8 +178,8 @@ pub async fn run_ingestion<S: FlightSource + 'static>(
             {
                 let mut idx = consumer_index.write().expect("index lock poisoned");
                 for doc in batch {
-                    // Keep only documents this shard owns (all of them when unsharded).
-                    if shard.map_or(true, |assignment| assignment.owns(&doc.icao24)) {
+                    // Keep only documents this node owns.
+                    if ownership.owns(&doc.icao24) {
                         if replicate_tx.is_some() {
                             indexed.push(doc.clone());
                         }
@@ -323,7 +380,7 @@ mod tests {
 
         // Two polls of the same 2-aircraft snapshot: re-observations upsert, so the store
         // holds 2 documents (one per aircraft), not 4.
-        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2), None, None).await;
+        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(2), Ownership::All, None).await;
 
         let idx = index.read().unwrap();
         assert_eq!(idx.len(), 2);
@@ -345,7 +402,7 @@ mod tests {
         let index = Arc::new(RwLock::new(ShardStore::new()));
         let source = FakeSource { batch };
         let assignment = ShardAssignment { index: 0, count };
-        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(1), Some(assignment), None).await;
+        run_ingestion(source, index.clone(), Duration::from_millis(0), Some(1), Ownership::Modulo(assignment), None).await;
 
         let idx = index.read().unwrap();
         assert_eq!(idx.len(), expected_shard0);
@@ -370,7 +427,7 @@ mod tests {
             all
         });
 
-        run_ingestion(source, index, Duration::from_millis(0), Some(1), None, Some(tx)).await;
+        run_ingestion(source, index, Duration::from_millis(0), Some(1), Ownership::All, Some(tx)).await;
 
         let forwarded = collector.await.unwrap();
         assert_eq!(forwarded.len(), 2); // both indexed docs were forwarded to replication

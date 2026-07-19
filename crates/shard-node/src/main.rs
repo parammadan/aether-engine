@@ -39,7 +39,10 @@ use common::pb::replication_server::ReplicationServer;
 use common::pb::shard_search_server::ShardSearchServer;
 use common::pb::NodeRole;
 use shard_node::cluster::{register_with_coordinator, run_heartbeat};
-use shard_node::ingest::{run_ingestion, FlightSource, OpenSkySource, ShardAssignment, SyntheticSource};
+use shard_node::ingest::{
+    run_ingestion, run_vshard_view, FlightSource, OpenSkySource, Ownership, ShardAssignment,
+    SyntheticSource,
+};
 use shard_node::raft::bootstrap::{bootstrap_group, raft_node_id, run_leader_ingestion, wait_for_group};
 use shard_node::raft::network::GrpcRaftNetworkFactory;
 use shard_node::raft::service::RaftTransportService;
@@ -146,9 +149,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ));
     }
 
-    let assignment = match NonZeroU32::new(shard_count) {
-        Some(count) if shard_count > 1 => Some(ShardAssignment { index: shard_index, count }),
-        _ => None,
+    // What this node keeps from the stream. If the coordinator runs virtual-shard
+    // placement (its table is non-empty), ownership follows the live table — reassigning a
+    // virtual shard moves ingestion between groups with no restarts. Otherwise fall back to
+    // the fixed hash % N slice (or everything, single-node). Auto-detected from the
+    // coordinator so nodes need no placement config of their own.
+    let ownership = {
+        let mut mapped = None;
+        if let Some(coord_addr) = &coordinator {
+            let endpoint = format!("http://{coord_addr}");
+            for _ in 0..10 {
+                if let Ok(mut c) =
+                    common::pb::coordinator_client::CoordinatorClient::connect(endpoint.clone()).await
+                {
+                    if let Ok(resp) = c.get_v_shard_assignments(common::pb::VShardAssignmentsRequest {}).await {
+                        let table = resp.into_inner().group_of;
+                        if !table.is_empty() {
+                            println!("placement: virtual shards (V={}, group {shard_index})", table.len());
+                            let assignments = Arc::new(RwLock::new(table));
+                            tokio::spawn(run_vshard_view(coord_addr.clone(), assignments.clone()));
+                            mapped = Some(Ownership::Mapped { group: shard_index, assignments });
+                        }
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+        match mapped {
+            Some(ownership) => ownership,
+            None => match NonZeroU32::new(shard_count) {
+                Some(count) if shard_count > 1 => {
+                    Ownership::Modulo(ShardAssignment { index: shard_index, count })
+                }
+                _ => Ownership::All,
+            },
+        }
     };
 
     match &raft {
@@ -185,7 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     raft.clone(),
                     my_id,
                     Duration::from_secs(poll_secs),
-                    assignment,
+                    ownership.clone(),
                 ));
             }
         }
@@ -206,7 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     ingest_index,
                     Duration::from_secs(poll_secs),
                     None,
-                    assignment,
+                    ownership.clone(),
                     replicate_tx,
                 )
                 .await;

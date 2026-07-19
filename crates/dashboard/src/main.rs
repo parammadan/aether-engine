@@ -133,6 +133,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
         let mut coordinator_reachable = false;
         let mut nodes_json = Vec::new();
         let mut shard_count = 0;
+        let mut vshard_group: Vec<u32> = Vec::new();
         let mut last_query = json!(null);
 
         if let Ok(mut client) = CoordinatorClient::connect(endpoint.clone()).await {
@@ -141,6 +142,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 coordinator_reachable = true;
                 let state = resp.into_inner();
                 shard_count = state.shard_count;
+                vshard_group = state.vshard_group.clone();
                 let managed = app.supervisor.managed();
                 for node in &state.nodes {
                     let role = NodeRole::try_from(node.role).unwrap_or(NodeRole::Unspecified);
@@ -189,6 +191,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
 
         let snapshot = json!({
             "shard_count": shard_count,
+            "vshard_group": vshard_group,
             "coordinator": { "addr": app.supervisor.coordinator_addr, "reachable": coordinator_reachable },
             "nodes": nodes_json,
             "query": {

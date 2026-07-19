@@ -68,6 +68,10 @@ pub struct Registry {
     /// node disappears from the registry (reaped after its process is stopped), so a drain
     /// can't be forgotten by a re-registration.
     draining: std::collections::HashSet<String>,
+    /// Virtual-shard placement: index = virtual shard, value = owning group. Empty when the
+    /// cluster runs plain `hash % N` placement. V is fixed at construction, forever; load
+    /// moves by reassigning entries, never by changing the modulus.
+    vshards: Vec<u32>,
 }
 
 impl Registry {
@@ -79,6 +83,7 @@ impl Registry {
             leaders: HashMap::new(),
             followers: HashMap::new(),
             draining: std::collections::HashSet::new(),
+            vshards: Vec::new(),
         }
     }
 
@@ -87,6 +92,33 @@ impl Registry {
     pub fn with_liveness_timeout(mut self, timeout: Duration) -> Self {
         self.liveness_timeout = timeout;
         self
+    }
+
+    /// Enable virtual-shard placement with `v` virtual shards, initially assigned
+    /// round-robin across the groups. V is fixed for the cluster's lifetime.
+    pub fn with_vshards(mut self, v: u32) -> Self {
+        self.vshards = (0..v).map(|i| i % self.shard_count).collect();
+        self
+    }
+
+    /// The placement table (empty when virtual shards are disabled).
+    pub fn vshard_assignments(&self) -> Vec<u32> {
+        self.vshards.clone()
+    }
+
+    /// Move one virtual shard to another group. Load moves; the modulus never changes.
+    pub fn reassign_vshard(&mut self, vshard: u32, group: u32) -> Result<(), String> {
+        if self.vshards.is_empty() {
+            return Err("virtual shards are not enabled".to_string());
+        }
+        if vshard as usize >= self.vshards.len() {
+            return Err(format!("vshard {vshard} out of range (V={})", self.vshards.len()));
+        }
+        if group >= self.shard_count {
+            return Err(format!("group {group} out of range (N={})", self.shard_count));
+        }
+        self.vshards[vshard as usize] = group;
+        Ok(())
     }
 
     pub fn shard_count(&self) -> u32 {
@@ -564,6 +596,19 @@ mod tests {
         assert_eq!(reg.report_raft_leader("m2", t0), None);
         // An unknown node changes nothing.
         assert_eq!(reg.report_raft_leader("ghost", t0), None);
+    }
+
+    #[test]
+    fn vshards_assign_round_robin_and_reassign_moves_one() {
+        let mut reg = Registry::new(2).with_vshards(4);
+        assert_eq!(reg.vshard_assignments(), vec![0, 1, 0, 1]);
+
+        assert!(reg.reassign_vshard(2, 1).is_ok());
+        assert_eq!(reg.vshard_assignments(), vec![0, 1, 1, 1]);
+
+        assert!(reg.reassign_vshard(9, 0).is_err()); // vshard out of range
+        assert!(reg.reassign_vshard(0, 5).is_err()); // group out of range
+        assert!(Registry::new(2).reassign_vshard(0, 1).is_err()); // disabled
     }
 
     #[test]

@@ -56,6 +56,17 @@ pub fn shard_for(icao24: &str, shard_count: NonZeroU32) -> u32 {
     (hash % shard_count.get() as u64) as u32
 }
 
+/// Map an `icao24` to a *virtual* shard in `0..vshard_count`.
+///
+/// Same deterministic hash as [`shard_for`], but with a different contract: `vshard_count`
+/// (V) is **fixed for the lifetime of the cluster**, so this mapping never changes. Growth
+/// and rebalancing happen one level up — whole virtual shards are reassigned between node
+/// groups — which sidesteps the fundamental flaw of `hash % N` placement: changing N remaps
+/// almost every key at once. (This is the fixed-slot scheme production systems use.)
+pub fn vshard_for(icao24: &str, vshard_count: NonZeroU32) -> u32 {
+    shard_for(icao24, vshard_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -48,7 +48,7 @@ async fn producer_throttles_when_indexing_stalls_and_resumes_after() {
         store.clone(),
         Duration::from_millis(0), // poll as fast as allowed — the flood
         None,                     // run forever; the test aborts it at the end
-        None,
+        shard_node::ingest::Ownership::All,
         None,
     ));
 

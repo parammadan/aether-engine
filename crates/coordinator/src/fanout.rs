@@ -40,6 +40,7 @@ pub fn merge_search_responses(
         hits.append(&mut resp.hits);
     }
 
+    let mut hits = dedup_by_aircraft(hits);
     hits.sort_by(cmp_hits);
 
     if limit != 0 && hits.len() > limit {
@@ -57,6 +58,33 @@ pub fn merge_search_responses(
 
 fn icao24_of(hit: &SearchHit) -> &str {
     hit.document.as_ref().map(|d| d.icao24.as_str()).unwrap_or("")
+}
+
+/// Does `a` supersede `b` for the same aircraft? Freshest observation wins (higher
+/// `observed_at`); ties go to the higher score.
+fn supersedes(a: &SearchHit, b: &SearchHit) -> bool {
+    let ta = a.document.as_ref().map(|d| d.observed_at).unwrap_or(0);
+    let tb = b.document.as_ref().map(|d| d.observed_at).unwrap_or(0);
+    ta > tb || (ta == tb && a.score > b.score)
+}
+
+/// Collapse duplicate aircraft across shard responses, keeping the freshest observation.
+/// Shards normally hold disjoint slices, so this is a no-op — duplicates appear only while
+/// a virtual shard's ownership moves between groups and both briefly hold copies. Hits are
+/// deduplicated; `total_matched` stays a per-shard sum and may transiently double-count the
+/// overlap (an exact cluster-wide count would require exchanging full id sets).
+fn dedup_by_aircraft(hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    let mut best: std::collections::HashMap<String, SearchHit> = std::collections::HashMap::new();
+    for hit in hits {
+        let key = icao24_of(&hit).to_string();
+        match best.get(&key) {
+            Some(existing) if !supersedes(&hit, existing) => {}
+            _ => {
+                best.insert(key, hit);
+            }
+        }
+    }
+    best.into_values().collect()
 }
 
 /// Incrementally merges shard responses as they stream in, maintaining the best-so-far
@@ -87,6 +115,7 @@ impl ProgressiveMerge {
         self.shards_answered += 1;
         self.total_matched += resp.total_matched;
         self.hits.extend(resp.hits);
+        self.hits = dedup_by_aircraft(std::mem::take(&mut self.hits));
         self.hits.sort_by(cmp_hits);
         if self.limit != 0 && self.hits.len() > self.limit {
             self.hits.truncate(self.limit);
@@ -171,6 +200,46 @@ mod tests {
             .map(|h| h.document.as_ref().unwrap().icao24.as_str())
             .collect();
         assert_eq!(order, vec!["bbb", "ccc", "aaa"]);
+    }
+
+    #[test]
+    fn duplicate_aircraft_across_shards_collapse_to_the_freshest_observation() {
+        // During a virtual-shard move, both groups briefly hold the same aircraft. The old
+        // group has a stale observation; the new group has a fresh one.
+        let mut stale = hit("aaa", 9.0);
+        stale.document.as_mut().unwrap().observed_at = 100;
+        let mut fresh = hit("aaa", 2.0);
+        fresh.document.as_mut().unwrap().observed_at = 200;
+
+        let r0 = shard_response("group-0", 1, vec![stale]);
+        let r1 = shard_response("group-1", 2, vec![fresh, hit("bbb", 1.0)]);
+
+        let merged = merge_search_responses(vec![r0, r1], 10, 2);
+
+        // One hit per aircraft, and it's the FRESH one (higher observed_at beats score).
+        assert_eq!(merged.hits.len(), 2);
+        let aaa = merged
+            .hits
+            .iter()
+            .find(|h| h.document.as_ref().unwrap().icao24 == "aaa")
+            .unwrap();
+        assert_eq!(aaa.document.as_ref().unwrap().observed_at, 200);
+    }
+
+    #[test]
+    fn progressive_merge_also_dedups_across_shards() {
+        let mut merge = ProgressiveMerge::new(2, 10);
+        let mut stale = hit("aaa", 9.0);
+        stale.document.as_mut().unwrap().observed_at = 100;
+        let mut fresh = hit("aaa", 2.0);
+        fresh.document.as_mut().unwrap().observed_at = 200;
+
+        merge.add(shard_response("group-0", 1, vec![stale]));
+        merge.add(shard_response("group-1", 1, vec![fresh]));
+
+        let snap = merge.snapshot(true);
+        assert_eq!(snap.hits.len(), 1);
+        assert_eq!(snap.hits[0].document.as_ref().unwrap().observed_at, 200);
     }
 
     #[test]

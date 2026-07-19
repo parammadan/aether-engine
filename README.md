@@ -94,6 +94,15 @@ continue uninterrupted. Verified in-process (election, quorum-searchable writes,
 re-election) and across real processes: three shard-node binaries form a group, the elected
 leader is SIGKILLed, the survivors re-elect, and query routing follows the new leader.
 
+Placement can run on **virtual shards** (AETHER_VSHARDS on the coordinator): documents map
+to a fixed number of virtual shards — the modulus never changes — and a coordinator-owned
+table assigns virtual shards to groups. Reassigning one moves ingestion between groups
+live (nodes follow the table, no restarts), while the coordinator deduplicates merged
+results by freshest observation so queries stay correct during the overlap. Verified
+across six real processes in two raft groups: every virtual shard moved off a group under
+query load, its leader stopped ingesting while the cluster kept growing, with zero query
+errors and no duplicate results.
+
 ## Live dashboard / chaos harness
 
 `cargo run -p dashboard` spawns a whole cluster (coordinator + a leader and follower per

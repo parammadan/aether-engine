@@ -25,7 +25,7 @@ use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::ShardMembersRequest;
 use common::shard::fnv1a_64;
 
-use crate::ingest::{FlightSource, ShardAssignment};
+use crate::ingest::{FlightSource, Ownership};
 
 use super::{DocBatch, Raft};
 
@@ -81,7 +81,7 @@ pub async fn run_leader_ingestion<S: FlightSource>(
     raft: Raft,
     my_raft_id: u64,
     poll_interval: Duration,
-    shard: Option<ShardAssignment>,
+    ownership: Ownership,
 ) {
     loop {
         // Wait (in bounded slices) until this node is the leader.
@@ -101,7 +101,7 @@ pub async fn run_leader_ingestion<S: FlightSource>(
                 Ok(batch) if !batch.is_empty() => {
                     let docs: Vec<_> = batch
                         .into_iter()
-                        .filter(|d| shard.map_or(true, |a| a.owns(&d.icao24)))
+                        .filter(|d| ownership.owns(&d.icao24))
                         .collect();
                     if !docs.is_empty() {
                         let payload = common::pb::ReplicateRequest { documents: docs, shard_id: 0 }
