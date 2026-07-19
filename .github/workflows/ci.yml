@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # tonic-build compiles the .proto contract at build time and needs protoc on PATH.
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # These two are the gate: a compile break anywhere in the workspace — including
+      # test targets — fails this job loudly. --locked pins the committed Cargo.lock.
+      - name: Build (workspace, all targets)
+        run: cargo build --workspace --all-targets --locked
+
+      - name: Test (workspace)
+        run: cargo test --workspace --locked
+
+      # Advisory for now: the tree has pre-existing warnings to triage. Once they are
+      # addressed, tighten this to `-- -D warnings` so lints gate too.
+      - name: Clippy (advisory)
+        run: cargo clippy --workspace --all-targets --locked
