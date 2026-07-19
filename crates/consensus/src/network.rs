@@ -17,6 +17,27 @@ use common::pb::RaftPayload;
 
 use crate::{NodeId, TypeConfig};
 
+/// Fault-injection hook: `AETHER_RAFT_DIAL_MAP` ("real=dial,real=dial") rewrites peer
+/// addresses at dial time, per process. Membership stays canonical — every member agrees
+/// on each peer's real address — while THIS member's traffic can be routed through a
+/// test's proxy. Unset (every real deployment), the map is empty and dialing is direct.
+fn dial_map() -> &'static std::collections::HashMap<String, String> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        std::env::var("AETHER_RAFT_DIAL_MAP")
+            .map(|raw| {
+                raw.split(',')
+                    .filter_map(|pair| {
+                        let (real, dial) = pair.trim().split_once('=')?;
+                        Some((real.trim().to_string(), dial.trim().to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
 /// Creates a network client per peer; the peer's address comes from its `BasicNode`
 /// membership entry, so transport addressing lives in the raft membership itself.
 #[derive(Default, Clone)]
@@ -26,7 +47,8 @@ impl RaftNetworkFactory<TypeConfig> for GrpcRaftNetworkFactory {
     type Network = GrpcRaftClient;
 
     async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
-        GrpcRaftClient { target, addr: node.addr.clone() }
+        let addr = dial_map().get(&node.addr).cloned().unwrap_or_else(|| node.addr.clone());
+        GrpcRaftClient { target, addr }
     }
 }
 
