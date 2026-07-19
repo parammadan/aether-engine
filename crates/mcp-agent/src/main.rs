@@ -101,7 +101,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
                 .ok_or("missing required argument: query")?;
             let mut client = connect().await?;
             let resp = client
-                .search(SearchRequest { query: query.to_string(), limit })
+                .search(common::net::with_token(SearchRequest { query: query.to_string(), limit }))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();
@@ -115,7 +115,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
             let vector = HashEmbedder.embed(query);
             let mut client = connect().await?;
             let resp = client
-                .vector_search(VectorSearchRequest { vector, limit })
+                .vector_search(common::net::with_token(VectorSearchRequest { vector, limit }))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();
@@ -124,7 +124,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
         "cluster_state" => {
             let mut client = connect().await?;
             let state = client
-                .get_cluster_state(ClusterStateRequest {})
+                .get_cluster_state(common::net::with_token(ClusterStateRequest {}))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();

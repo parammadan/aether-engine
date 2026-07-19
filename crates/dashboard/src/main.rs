@@ -155,7 +155,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
 
         if let Ok(mut client) = common::client::connect_first_healthy(&app.coordinator_addrs).await {
             // Cluster topology as the coordinator sees it.
-            if let Ok(resp) = client.get_cluster_state(ClusterStateRequest {}).await {
+            if let Ok(resp) = client.get_cluster_state(common::net::with_token(ClusterStateRequest {})).await {
                 coordinator_reachable = true;
                 let state = resp.into_inner();
                 shard_count = state.shard_count;
@@ -187,7 +187,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
 
             // One live query through the scatter-gather path.
             let t0 = Instant::now();
-            match client.search(SearchRequest { query: query_term.clone(), limit: 3 }).await {
+            match client.search(common::net::with_token(SearchRequest { query: query_term.clone(), limit: 3 })).await {
                 Ok(resp) => {
                     let r = resp.into_inner();
                     app.query_ok.fetch_add(1, Ordering::Relaxed);
@@ -262,7 +262,7 @@ async fn api_kill(State(app): State<Arc<App>>, Path(node_id): Path<String>) -> i
 /// consensus. The tile shows "draining"; once its store plateaus, kill it — a relocation.
 async fn api_drain(State(app): State<Arc<App>>, Path(node_id): Path<String>) -> impl IntoResponse {
     match common::client::connect_first_healthy(&app.coordinator_addrs).await {
-        Ok(mut client) => match client.drain_node(DrainRequest { node_id: node_id.clone() }).await {
+        Ok(mut client) => match client.drain_node(common::net::with_token(DrainRequest { node_id: node_id.clone() })).await {
             Ok(resp) => {
                 let resp = resp.into_inner();
                 if resp.ok {
