@@ -103,6 +103,12 @@ fn build_store() -> Result<ShardStore, Box<dyn std::error::Error + Send + Sync>>
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr_str = std::env::var("AETHER_SHARD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let addr: SocketAddr = addr_str.parse()?;
+    // Bind vs advertise: on a real network a node binds 0.0.0.0 but must register an
+    // address PEERS can dial (its private IP). Everything downstream — routing, raft
+    // membership, replication — carries the advertised address, so getting this wrong
+    // breaks the cluster the moment it leaves one machine. Defaults to the bind address
+    // for single-host runs.
+    let advertise = std::env::var("AETHER_ADVERTISE_ADDR").unwrap_or_else(|_| addr_str.clone());
     let shard_index: u32 = env_or("AETHER_SHARD_INDEX", 0);
     let shard_count: u32 = env_or("AETHER_SHARD_COUNT", 1);
     let node_id = std::env::var("AETHER_NODE_ID").unwrap_or_else(|_| format!("node-{shard_index}"));
@@ -159,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Register with the coordinator if configured. A failure is logged but does NOT stop the
     // node from serving: the data plane keeps running even if the control plane is down.
     if let Some(coord_addr) = &coordinator {
-        match register_with_coordinator(coord_addr, &node_id, &addr_str, shard_index, role).await {
+        match register_with_coordinator(coord_addr, &node_id, &advertise, shard_index, role).await {
             Ok(n) => println!("registered '{node_id}' as {role:?} of shard {shard_index} (cluster N={n})"),
             Err(e) => eprintln!("warning: could not register with coordinator at {coord_addr}: {e}"),
         }
@@ -168,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokio::spawn(run_heartbeat(
             coord_addr.clone(),
             node_id.clone(),
-            addr_str.clone(),
+            advertise.clone(),
             shard_index,
             role,
             Duration::from_secs(hb_secs),

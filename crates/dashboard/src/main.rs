@@ -62,14 +62,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let shard_count: u32 = env_or("AETHER_SHARD_COUNT", 2);
     let http_addr: String =
         std::env::var("AETHER_DASHBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let coordinator_addr = "127.0.0.1:50050".to_string();
+    // Remote mode: observe an EXISTING cluster (e.g. on EC2) instead of spawning one.
+    // Kill/add buttons only manage local children, so against a remote cluster they
+    // simply have nothing to act on.
+    let remote = std::env::var("AETHER_DASHBOARD_REMOTE").ok();
+    let coordinator_addr = remote.clone().unwrap_or_else(|| "127.0.0.1:50050".to_string());
     let raft = std::env::var("AETHER_CONSENSUS").map(|c| c.eq_ignore_ascii_case("raft")).unwrap_or(false);
 
     let supervisor = Supervisor::new(shard_count, coordinator_addr.clone(), raft);
-    supervisor.spawn_coordinator()?;
-    // Give the coordinator a beat to bind before nodes try to register (they retry anyway).
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let spawned = supervisor.spawn_initial_topology()?;
+    let spawned = if remote.is_none() {
+        supervisor.spawn_coordinator()?;
+        // Give the coordinator a beat to bind before nodes try to register (they retry anyway).
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        supervisor.spawn_initial_topology()?
+    } else {
+        println!("dashboard: remote mode, observing {coordinator_addr}");
+        Vec::new()
+    };
 
     let (state_tx, state_rx) = tokio::sync::watch::channel("{}".to_string());
     let app = Arc::new(App {
