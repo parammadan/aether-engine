@@ -124,7 +124,7 @@ async fn raft_group_forms_and_serves_entirely_over_mtls() {
             .expect("spawn member");
         children.insert(format!("m{i}"), child);
     }
-    let _cluster = Cluster { children };
+    let mut _cluster = Cluster { children };
 
     // Over mTLS: a leader must be elected (proves the raft transport handshakes) and the
     // group must be committing (proves log replication rides the TLS transport).
@@ -145,7 +145,7 @@ async fn raft_group_forms_and_serves_entirely_over_mtls() {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert!(leader.is_some(), "no committing leader emerged over mTLS");
+    let leader = leader.expect("no committing leader emerged over mTLS");
 
     // A routed query returns real hits, all of it TLS from client to shard and back.
     let resp = client
@@ -154,6 +154,33 @@ async fn raft_group_forms_and_serves_entirely_over_mtls() {
         .unwrap()
         .into_inner();
     assert_eq!(resp.shards_answered, 1);
+    assert!(!resp.hits.is_empty(), "the encrypted query path returned no hits");
+
+    // Chaos UNDER TLS: SIGKILL the leader; the survivors must re-elect and keep serving,
+    // with the raft transport that carries the new election running over mutual TLS.
+    if let Some(child) = _cluster.children.get_mut(&leader) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let mut reelected = false;
+    for _ in 0..120 {
+        let state = client.get_cluster_state(ClusterStateRequest {}).await.unwrap().into_inner();
+        if let Some(l) = state.nodes.iter().find(|n| n.role == NodeRole::Leader as i32) {
+            if l.node_id != leader {
+                let resp = client
+                    .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+                    .await
+                    .unwrap()
+                    .into_inner();
+                if resp.shards_answered == 1 {
+                    reelected = true;
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(reelected, "no re-election served over mTLS after the leader was killed");
     assert!(!resp.hits.is_empty(), "the encrypted query path returned no hits");
 
     let _ = std::fs::remove_dir_all(&dir);
