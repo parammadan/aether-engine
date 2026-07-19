@@ -1,27 +1,24 @@
-//! In-memory raft storage: the log store and the state machine.
+//! Raft storage: the in-memory log store and the generic snapshotting state machine.
 //!
-//! The state machine IS the shard's `ShardStore` — applying a committed entry means
-//! upserting its documents, so a quorum-committed write is immediately searchable on every
-//! member that applied it. Storage is in-memory to match the rest of the store (the shard
-//! rebuilds from the live stream / snapshots on restart); durable log storage is a separate
-//! step when persistence exists at all.
+//! The state machine is generic over a [`StateMachineApp`]: applying a committed entry
+//! hands the payload bytes to the application, so a quorum-committed write is visible in
+//! the application's state the moment it applies. The snapshot machinery (in-memory copy,
+//! local dir with atomic rename, optional S3 tier) is entirely application-agnostic —
+//! snapshots are whatever bytes the application dumps.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::ops::RangeBounds;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use openraft::storage::{LogFlushed, LogState, RaftLogStorage, RaftStateMachine, Snapshot};
 use openraft::{
     BasicNode, Entry, EntryPayload, LogId, OptionalSend, RaftLogReader, RaftSnapshotBuilder,
     SnapshotMeta, StorageError, StoredMembership, Vote,
 };
-use prost::Message;
 
-use crate::store::ShardStore;
-
-use super::{Applied, NodeId, TypeConfig};
+use crate::{Applied, NodeId, StateMachineApp, TypeConfig};
 
 // =============================================================================
 // Log store
@@ -135,13 +132,13 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 }
 
 // =============================================================================
-// State machine (the ShardStore)
+// State machine (generic over the application)
 // =============================================================================
 
 #[derive(Debug, Clone)]
 struct StoredSnapshot {
     meta: SnapshotMeta<NodeId, BasicNode>,
-    /// prost-encoded `ReplicateRequest` holding the full document set.
+    /// Application-encoded full-state dump.
     data: Vec<u8>,
 }
 
@@ -153,11 +150,11 @@ struct SmInner {
     snapshot: Option<StoredSnapshot>,
 }
 
-/// State machine over the shard's document store. Cheap-clone handle (`Arc` inside), so the
-/// same instance serves raft and the search path.
+/// State machine over an application's state. Cheap-clone handle (`Arc` inside), so the
+/// same instance serves raft and the application's read path.
 #[derive(Clone)]
-pub struct StateMachineStore {
-    store: Arc<RwLock<ShardStore>>,
+pub struct StateMachineStore<A: StateMachineApp> {
+    app: A,
     inner: Arc<Mutex<SmInner>>,
     /// When set, snapshots are persisted here (tmp -> atomic rename) and the latest one is
     /// loaded at construction — restart = latest snapshot + WAL tail replay.
@@ -165,21 +162,21 @@ pub struct StateMachineStore {
     /// Optional S3 tier: snapshots are uploaded after they are built, and a cold boot with
     /// no local state fetches the newest object. Local disk owns the log; S3 owns recovery
     /// points (it has no fsync semantics, so it is exactly wrong for a WAL).
-    s3: Option<Arc<super::s3::SnapshotS3>>,
+    s3: Option<Arc<crate::s3::SnapshotS3>>,
 }
 
 /// On-disk snapshot format: the raft meta (last applied id + membership) plus the
-/// prost-encoded document dump. Bincode-framed as one file, replaced atomically.
+/// application's state dump. Bincode-framed as one file, replaced atomically.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SnapshotFile {
     meta: SnapshotMeta<NodeId, BasicNode>,
     data: Vec<u8>,
 }
 
-impl StateMachineStore {
-    pub fn new(store: Arc<RwLock<ShardStore>>) -> Self {
+impl<A: StateMachineApp> StateMachineStore<A> {
+    pub fn new(app: impl Into<A>) -> Self {
         Self {
-            store,
+            app: app.into(),
             inner: Arc::new(Mutex::new(SmInner::default())),
             snap_dir: None,
             s3: None,
@@ -187,28 +184,26 @@ impl StateMachineStore {
     }
 
     /// Durable variant: persists every snapshot under `dir` and, at construction, restores
-    /// the newest one (documents into the store, last-applied + membership into the state
+    /// the newest one (state into the application, last-applied + membership into the state
     /// machine) so openraft resumes log replay from the snapshot point.
     pub fn with_snapshot_dir(
-        store: Arc<RwLock<ShardStore>>,
+        app: impl Into<A>,
         dir: std::path::PathBuf,
     ) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         let sm = Self {
-            store,
+            app: app.into(),
             inner: Arc::new(Mutex::new(SmInner::default())),
             snap_dir: Some(dir.clone()),
             s3: None,
         };
         if let Some((meta, data)) = Self::load_latest(&dir)? {
-            let decoded = common::pb::ReplicateRequest::decode(data.as_slice()).unwrap_or_default();
-            let restored = decoded.documents.len();
-            sm.store.write().unwrap().replace_all(decoded.documents);
+            let restored = sm.app.restore(&data);
             let mut inner = sm.inner.lock().unwrap();
             inner.last_applied = meta.last_log_id;
             inner.membership = meta.last_membership.clone();
             inner.snapshot = Some(StoredSnapshot { meta, data });
-            println!("snapshot: restored {restored} documents from disk");
+            println!("snapshot: restored {restored} {} from disk", sm.app.unit());
         }
         Ok(sm)
     }
@@ -217,11 +212,11 @@ impl StateMachineStore {
     /// S3 tier is configured, cold-boot from the newest object (and re-persist it locally).
     /// Chain: local -> S3 -> empty.
     pub async fn open_durable(
-        store: Arc<RwLock<ShardStore>>,
+        app: impl Into<A>,
         dir: std::path::PathBuf,
-        s3: Option<Arc<super::s3::SnapshotS3>>,
+        s3: Option<Arc<crate::s3::SnapshotS3>>,
     ) -> std::io::Result<Self> {
-        let mut sm = Self::with_snapshot_dir(store, dir)?;
+        let mut sm = Self::with_snapshot_dir(app, dir)?;
         sm.s3 = s3;
 
         let has_local = sm.inner.lock().unwrap().snapshot.is_some();
@@ -230,10 +225,7 @@ impl StateMachineStore {
                 if let Some(bytes) = s3.latest().await {
                     match bincode::deserialize::<SnapshotFile>(&bytes) {
                         Ok(file) => {
-                            let decoded = common::pb::ReplicateRequest::decode(file.data.as_slice())
-                                .unwrap_or_default();
-                            let restored = decoded.documents.len();
-                            sm.store.write().unwrap().replace_all(decoded.documents);
+                            let restored = sm.app.restore(&file.data);
                             {
                                 let mut inner = sm.inner.lock().unwrap();
                                 inner.last_applied = file.meta.last_log_id;
@@ -244,7 +236,7 @@ impl StateMachineStore {
                                 });
                             }
                             sm.persist(&file.meta, &file.data); // re-seed the local tier
-                            println!("snapshot: cold-booted {restored} documents from s3");
+                            println!("snapshot: cold-booted {restored} {} from s3", sm.app.unit());
                         }
                         Err(e) => eprintln!("s3: undecodable snapshot ignored: {e}"),
                     }
@@ -313,16 +305,11 @@ impl StateMachineStore {
             }
         }
     }
-
-    fn encode_all_docs(&self) -> Vec<u8> {
-        let docs = self.store.read().unwrap().documents();
-        common::pb::ReplicateRequest { documents: docs, shard_id: 0 }.encode_to_vec()
-    }
 }
 
-impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
+impl<A: StateMachineApp> RaftSnapshotBuilder<TypeConfig> for StateMachineStore<A> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
-        let data = self.encode_all_docs();
+        let data = self.app.snapshot_bytes();
         // Lexically scoped lock: the guard must be provably gone before the S3 await below.
         let meta = {
             let mut inner = self.inner.lock().unwrap();
@@ -349,7 +336,7 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
     }
 }
 
-impl RaftStateMachine<TypeConfig> for StateMachineStore {
+impl<A: StateMachineApp> RaftStateMachine<TypeConfig> for StateMachineStore<A> {
     type SnapshotBuilder = Self;
 
     async fn applied_state(
@@ -368,16 +355,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         for entry in entries {
             let reply = match entry.payload {
                 EntryPayload::Blank => Applied(0),
-                EntryPayload::Normal(batch) => {
-                    // A committed batch: decode and upsert into the searchable store.
-                    let decoded = common::pb::ReplicateRequest::decode(batch.0.as_slice())
-                        .unwrap_or_default();
-                    let count = decoded.documents.len() as u32;
-                    let mut store = self.store.write().unwrap();
-                    for doc in decoded.documents {
-                        store.insert(doc);
-                    }
-                    Applied(count)
+                EntryPayload::Normal(ref payload) => {
+                    // A committed payload: the application decodes and applies it.
+                    Applied(self.app.apply(&payload.0))
                 }
                 EntryPayload::Membership(ref membership) => {
                     let mut inner = self.inner.lock().unwrap();
@@ -408,8 +388,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), StorageError<NodeId>> {
         let data = snapshot.into_inner();
-        let decoded = common::pb::ReplicateRequest::decode(data.as_slice()).unwrap_or_default();
-        self.store.write().unwrap().replace_all(decoded.documents);
+        self.app.restore(&data);
         let mut inner = self.inner.lock().unwrap();
         inner.last_applied = meta.last_log_id;
         inner.membership = meta.last_membership.clone();

@@ -1058,6 +1058,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "consensus"
+version = "0.0.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "bincode",
+ "common",
+ "crc32fast",
+ "openraft",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "console"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3775,12 +3792,9 @@ name = "shard-node"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "aws-config",
- "aws-sdk-s3",
- "bincode",
  "common",
+ "consensus",
  "coordinator",
- "crc32fast",
  "hnsw_rs",
  "openraft",
  "prost",

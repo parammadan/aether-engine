@@ -1,0 +1,27 @@
+[package]
+name = "consensus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Reusable raft machinery: type config over opaque payloads, in-memory and durable
+# (WAL) log storage, a generic snapshotting state machine, the gRPC transport, and the
+# S3 snapshot tier. Any component that needs a replicated state machine — a shard's
+# document store, the control plane's placement table — builds its group from these
+# parts and supplies only the state-machine application (how to apply, dump, and
+# restore its own state as bytes).
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+tonic.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+openraft = { version = "0.9.24", features = ["serde", "storage-v2"] }
+bincode = "1"
+crc32fast = "1.5.0"
+aws-config = "1.9.0"
+aws-sdk-s3 = "1.138.1"
+
+[dev-dependencies]
+tempfile = "3"

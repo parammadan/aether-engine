@@ -15,7 +15,7 @@ use openraft::BasicNode;
 use common::pb::raft_transport_client::RaftTransportClient;
 use common::pb::RaftPayload;
 
-use super::{NodeId, TypeConfig};
+use crate::{NodeId, TypeConfig};
 
 /// Creates a network client per peer; the peer's address comes from its `BasicNode`
 /// membership entry, so transport addressing lives in the raft membership itself.

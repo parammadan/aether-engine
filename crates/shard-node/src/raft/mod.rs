@@ -1,4 +1,4 @@
-//! Consensus for a shard group, via `openraft`.
+//! Consensus for a shard group.
 //!
 //! The members serving one shard (its leader and followers) form a **raft group**: the
 //! stream of indexed document batches is the group's replicated log, and the shard's
@@ -11,65 +11,76 @@
 //!   - **split-brain**: an old leader's writes can't commit without a quorum, and a stale
 //!     term loses to a newer one by construction.
 //!
-//! Consensus itself is `openraft`'s (deliberately not hand-rolled); this module supplies the
-//! three integration points the library asks for: log storage, the state machine, and a
-//! network transport (our gRPC).
+//! The raft machinery itself (type config, WAL, transport, snapshot tiers) lives in the
+//! `consensus` crate and is payload-agnostic; this module supplies the one shard-specific
+//! piece — [`ShardApp`], which applies committed document batches to the `ShardStore` and
+//! dumps/restores it for snapshots — plus group formation and membership reconciliation.
 //!
 //! Note on group size: a group of 2 cannot survive any failure (a quorum of 2 is 2), so a
 //! raft-managed shard runs at least 3 members — quorum 2 of 3 rides out one death.
 
 pub mod bootstrap;
 pub mod reconcile;
-pub mod s3;
-pub mod network;
-pub mod service;
-pub mod storage;
-pub mod wal;
 
-use std::io::Cursor;
+// The shared machinery, re-exported under the paths this crate has always used.
+pub use consensus::Payload as DocBatch;
+pub use consensus::{network, s3, service, wal};
+pub use consensus::{raft_config, Applied, NodeId, Raft, TypeConfig};
 
-use openraft::BasicNode;
-use serde::{Deserialize, Serialize};
+/// The log/state-machine storage types, with the state machine pinned to this crate's
+/// application (the shard's document store).
+pub mod storage {
+    pub use consensus::storage::LogStore;
 
-/// One log entry's payload: a prost-encoded `ReplicateRequest` (a batch of flight
-/// documents). Kept as opaque bytes here because prost types don't speak serde; the state
-/// machine decodes on apply. The encoding is already the replication wire format, so
-/// snapshots and log entries share one codec.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocBatch(pub Vec<u8>);
+    /// State machine over the shard's document store.
+    pub type StateMachineStore = consensus::storage::StateMachineStore<super::ShardApp>;
+}
 
-/// The state machine's reply to an applied entry: how many documents were upserted.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Applied(pub u32);
+use std::sync::{Arc, RwLock};
 
-openraft::declare_raft_types!(
-    /// Raft type configuration for a shard group. Node ids are small integers assigned per
-    /// group member; `BasicNode` carries the member's transport address.
-    pub TypeConfig:
-        D = DocBatch,
-        R = Applied,
-        Node = BasicNode,
-        SnapshotData = Cursor<Vec<u8>>,
-);
+use prost::Message;
 
-pub type NodeId = <TypeConfig as openraft::RaftTypeConfig>::NodeId;
-pub type Raft = openraft::Raft<TypeConfig>;
+use crate::store::ShardStore;
 
-/// Raft timing tuned for small, chatty LAN groups (and fast tests/demos): 100ms heartbeats,
-/// elections after 300–600ms of silence.
-pub fn raft_config() -> openraft::Config {
-    let mut config = openraft::Config {
-        heartbeat_interval: 100,
-        election_timeout_min: 300,
-        election_timeout_max: 600,
-        ..Default::default()
-    };
-    // Snapshot cadence (log entries between snapshots) — smaller values bound WAL growth
-    // and speed cold recovery at the cost of more frequent snapshot writes.
-    if let Some(n) = std::env::var("AETHER_SNAPSHOT_LOGS").ok().and_then(|s| s.parse::<u64>().ok()) {
-        if n > 0 {
-            config.snapshot_policy = openraft::SnapshotPolicy::LogsSinceLast(n);
-        }
+/// The shard's state-machine application: committed payloads are prost-encoded
+/// `ReplicateRequest`s (batches of flight documents), applied by upserting into the
+/// searchable store. Kept as opaque bytes in the log because prost types don't speak
+/// serde; the encoding is already the replication wire format, so snapshots and log
+/// entries share one codec.
+#[derive(Clone)]
+pub struct ShardApp(pub Arc<RwLock<ShardStore>>);
+
+impl From<Arc<RwLock<ShardStore>>> for ShardApp {
+    fn from(store: Arc<RwLock<ShardStore>>) -> Self {
+        Self(store)
     }
-    config
+}
+
+impl consensus::StateMachineApp for ShardApp {
+    fn apply(&self, payload: &[u8]) -> u32 {
+        // A committed batch: decode and upsert into the searchable store.
+        let decoded = common::pb::ReplicateRequest::decode(payload).unwrap_or_default();
+        let count = decoded.documents.len() as u32;
+        let mut store = self.0.write().unwrap();
+        for doc in decoded.documents {
+            store.insert(doc);
+        }
+        count
+    }
+
+    fn snapshot_bytes(&self) -> Vec<u8> {
+        let docs = self.0.read().unwrap().documents();
+        common::pb::ReplicateRequest { documents: docs, shard_id: 0 }.encode_to_vec()
+    }
+
+    fn restore(&self, bytes: &[u8]) -> u32 {
+        let decoded = common::pb::ReplicateRequest::decode(bytes).unwrap_or_default();
+        let count = decoded.documents.len() as u32;
+        self.0.write().unwrap().replace_all(decoded.documents);
+        count
+    }
+
+    fn unit(&self) -> &'static str {
+        "documents"
+    }
 }

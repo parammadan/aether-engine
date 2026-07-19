@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use openraft::{Entry, LogId, Vote};
 use serde::{Deserialize, Serialize};
 
-use super::{NodeId, TypeConfig};
+use crate::{NodeId, TypeConfig};
 
 const SEGMENT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const FRAME_HEADER: usize = 8; // u32 len + u32 crc

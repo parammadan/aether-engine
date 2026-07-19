@@ -7,7 +7,7 @@ use tonic::{Request, Response, Status};
 use common::pb::raft_transport_server::RaftTransport;
 use common::pb::RaftPayload;
 
-use super::{Raft, TypeConfig};
+use crate::{Raft, TypeConfig};
 
 pub struct RaftTransportService {
     raft: Raft,
@@ -40,7 +40,7 @@ impl RaftTransport for RaftTransportService {
     }
 
     async fn vote(&self, request: Request<RaftPayload>) -> Result<Response<RaftPayload>, Status> {
-        let rpc: openraft::raft::VoteRequest<super::NodeId> = decode(&request.into_inner())?;
+        let rpc: openraft::raft::VoteRequest<crate::NodeId> = decode(&request.into_inner())?;
         let result = self.raft.vote(rpc).await;
         encode(&result)
     }
