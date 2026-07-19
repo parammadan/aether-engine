@@ -1,0 +1,13 @@
+[package]
+name = "testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only fault injection. Never a dependency of any shipped binary — integration
+# tests use it to put controllable TCP proxies between raft peers and cut the network
+# deterministically (per direction, per pair), which localhost can't otherwise do.
+
+[dependencies]
+tokio = { workspace = true }

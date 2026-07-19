@@ -7,6 +7,7 @@ members = [
     "crates/dashboard",
     "crates/mcp-agent",
     "crates/shard-node",
+    "crates/testkit",
 ]
 
 # Centralize shared versions here so every crate uses one source of truth.

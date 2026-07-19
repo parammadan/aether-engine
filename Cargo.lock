@@ -3805,6 +3805,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "testkit",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -4021,6 +4022,13 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "testkit"
+version = "0.0.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
