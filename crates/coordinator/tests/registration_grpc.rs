@@ -103,14 +103,14 @@ async fn heartbeat_reports_known_and_unknown_nodes() {
     client.register_node(req("n0", 0, NodeRole::Leader)).await.unwrap();
 
     let known = client
-        .heartbeat(HeartbeatRequest { node_id: "n0".to_string() })
+        .heartbeat(HeartbeatRequest { node_id: "n0".to_string(), raft_leader: false })
         .await
         .unwrap()
         .into_inner();
     assert!(known.known);
 
     let unknown = client
-        .heartbeat(HeartbeatRequest { node_id: "ghost".to_string() })
+        .heartbeat(HeartbeatRequest { node_id: "ghost".to_string(), raft_leader: false })
         .await
         .unwrap()
         .into_inner();
