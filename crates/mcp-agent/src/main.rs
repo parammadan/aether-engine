@@ -17,7 +17,8 @@
 //! default. A cluster running a different embedder rejects the query vector loudly (the
 //! shard checks dimensions), which surfaces as a tool error rather than silent garbage.
 //!
-//! Config: AETHER_COORDINATOR_ADDR (default 127.0.0.1:50050).
+//! Config: AETHER_COORDINATOR_ADDRS (comma-separated, first healthy wins) or
+//! AETHER_COORDINATOR_ADDR (default 127.0.0.1:50050).
 //! Protocol messages go to stdout ONLY; diagnostics go to stderr.
 
 use serde_json::{json, Value};
@@ -27,14 +28,9 @@ use common::embed::{Embedder, HashEmbedder};
 use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::{ClusterStateRequest, NodeRole, SearchRequest, VectorSearchRequest};
 
-fn coordinator_addr() -> String {
-    std::env::var("AETHER_COORDINATOR_ADDR").unwrap_or_else(|_| "127.0.0.1:50050".to_string())
-}
-
 async fn connect() -> Result<CoordinatorClient<tonic::transport::Channel>, String> {
-    CoordinatorClient::connect(format!("http://{}", coordinator_addr()))
+    common::client::connect_first_healthy(&common::client::coordinator_addrs("127.0.0.1:50050"))
         .await
-        .map_err(|e| format!("cannot reach coordinator at {}: {e}", coordinator_addr()))
 }
 
 // =============================================================================
@@ -207,7 +203,7 @@ async fn handle(msg: &Value) -> Option<Value> {
 
 #[tokio::main]
 async fn main() {
-    eprintln!("aether-mcp: read-only query agent over coordinator {}", coordinator_addr());
+    eprintln!("aether-mcp: read-only query agent over coordinator(s) {}", common::client::coordinator_addrs("127.0.0.1:50050").join(", "));
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
 

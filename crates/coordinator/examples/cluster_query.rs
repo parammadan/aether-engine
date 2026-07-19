@@ -4,18 +4,18 @@
 //!   cargo run -p shard-node                                       # start shard node(s)
 //!   cargo run -p coordinator --example cluster_query -- united 5  # search across all shards
 //!
-//! Args: <query> [limit]. Address from AETHER_COORDINATOR_ADDR (default 127.0.0.1:50050).
+//! Args: <query> [limit]. Addresses from AETHER_COORDINATOR_ADDRS (comma-separated,
+//! first healthy wins) or AETHER_COORDINATOR_ADDR (default 127.0.0.1:50050).
 
-use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::SearchRequest;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::var("AETHER_COORDINATOR_ADDR").unwrap_or_else(|_| "127.0.0.1:50050".to_string());
+    let addrs = common::client::coordinator_addrs("127.0.0.1:50050");
     let query = std::env::args().nth(1).unwrap_or_default();
     let limit: u32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5);
 
-    let mut client = CoordinatorClient::connect(format!("http://{addr}")).await?;
+    let mut client = common::client::connect_first_healthy(&addrs).await?;
     let resp = client
         .search(SearchRequest { query: query.clone(), limit })
         .await?

@@ -25,13 +25,15 @@ use axum::extract::{Path, State};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
-use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::{ClusterStateRequest, DrainRequest, NodeRole, SearchRequest};
 use serde_json::json;
 use supervisor::Supervisor;
 
 struct App {
     supervisor: Supervisor,
+    /// Coordinator endpoints in preference order; every control-plane read or drain
+    /// goes to the first one that answers.
+    coordinator_addrs: Vec<String>,
     state_rx: tokio::sync::watch::Receiver<String>,
     events: Mutex<Vec<serde_json::Value>>,
     query_ok: AtomicU64,
@@ -64,25 +66,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::env::var("AETHER_DASHBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     // Remote mode: observe an EXISTING cluster (e.g. on EC2) instead of spawning one.
     // Kill/add buttons only manage local children, so against a remote cluster they
-    // simply have nothing to act on.
+    // simply have nothing to act on. May be a comma-separated coordinator list; reads
+    // go to the first coordinator that answers.
     let remote = std::env::var("AETHER_DASHBOARD_REMOTE").ok();
-    let coordinator_addr = remote.clone().unwrap_or_else(|| "127.0.0.1:50050".to_string());
+    let coordinator_addrs = match &remote {
+        Some(list) => common::client::parse_addr_list(list, "127.0.0.1:50050"),
+        None => vec!["127.0.0.1:50050".to_string()],
+    };
     let raft = std::env::var("AETHER_CONSENSUS").map(|c| c.eq_ignore_ascii_case("raft")).unwrap_or(false);
 
-    let supervisor = Supervisor::new(shard_count, coordinator_addr.clone(), raft);
+    // Locally spawned children register with the first (only) local coordinator.
+    let supervisor = Supervisor::new(shard_count, coordinator_addrs[0].clone(), raft);
     let spawned = if remote.is_none() {
         supervisor.spawn_coordinator()?;
         // Give the coordinator a beat to bind before nodes try to register (they retry anyway).
         tokio::time::sleep(Duration::from_millis(400)).await;
         supervisor.spawn_initial_topology()?
     } else {
-        println!("dashboard: remote mode, observing {coordinator_addr}");
+        println!("dashboard: remote mode, observing {}", coordinator_addrs.join(", "));
         Vec::new()
     };
 
     let (state_tx, state_rx) = tokio::sync::watch::channel("{}".to_string());
     let app = Arc::new(App {
         supervisor,
+        coordinator_addrs,
         state_rx,
         events: Mutex::new(Vec::new()),
         query_ok: AtomicU64::new(0),
@@ -123,7 +131,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// Once a second: fetch the coordinator's cluster view, run one query through it, detect
 /// promotions by diffing roles, and publish the combined snapshot for the UI.
 async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
-    let endpoint = format!("http://{}", app.supervisor.coordinator_addr);
     // The live query's term must match what the configured source actually produces:
     // OpenSky documents carry origin countries ("United States"...); synthetic ones all
     // carry "Synthetica". Overridable for custom demos.
@@ -145,7 +152,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
         let mut vshard_group: Vec<u32> = Vec::new();
         let mut last_query = json!(null);
 
-        if let Ok(mut client) = CoordinatorClient::connect(endpoint.clone()).await {
+        if let Ok(mut client) = common::client::connect_first_healthy(&app.coordinator_addrs).await {
             // Cluster topology as the coordinator sees it.
             if let Ok(resp) = client.get_cluster_state(ClusterStateRequest {}).await {
                 coordinator_reachable = true;
@@ -253,8 +260,7 @@ async fn api_kill(State(app): State<Arc<App>>, Path(node_id): Path<String>) -> i
 /// Deliberately drain a node: the coordinator marks it, its group's leader removes it from
 /// consensus. The tile shows "draining"; once its store plateaus, kill it — a relocation.
 async fn api_drain(State(app): State<Arc<App>>, Path(node_id): Path<String>) -> impl IntoResponse {
-    let endpoint = format!("http://{}", app.supervisor.coordinator_addr);
-    match CoordinatorClient::connect(endpoint).await {
+    match common::client::connect_first_healthy(&app.coordinator_addrs).await {
         Ok(mut client) => match client.drain_node(DrainRequest { node_id: node_id.clone() }).await {
             Ok(resp) => {
                 let resp = resp.into_inner();

@@ -15,6 +15,7 @@ pub mod pb {
     tonic::include_proto!("aether.v1");
 }
 
+pub mod client;
 pub mod embed;
 #[cfg(feature = "onnx")]
 pub mod embed_onnx;
