@@ -45,10 +45,15 @@ pub async fn run_membership_reconciler(
         let Ok(resp) = client.list_shard_members(ShardMembersRequest { shard_id }).await else {
             continue;
         };
-        let desired: BTreeMap<u64, String> = resp
-            .into_inner()
-            .members
+        let members = resp.into_inner().members;
+        let draining: BTreeSet<u64> = members
+            .iter()
+            .filter(|m| m.draining)
+            .map(|m| raft_node_id(&m.node_id))
+            .collect();
+        let desired: BTreeMap<u64, String> = members
             .into_iter()
+            .filter(|m| !m.draining) // a draining node is never (re-)added
             .map(|m| (raft_node_id(&m.node_id), m.address))
             .collect();
 
@@ -61,6 +66,36 @@ pub async fn run_membership_reconciler(
                 membership.voter_ids().collect(),
             )
         };
+
+        // Execute deliberate removals (drains) — with a hard floor: never shrink the voter
+        // set below 3, because a 2-voter group cannot survive any failure. Removing a
+        // learner is always safe (it never counted toward quorum).
+        for id in &draining {
+            if !in_group.contains(id) {
+                continue; // already out; the operator can stop the process
+            }
+            if voters.contains(id) {
+                if voters.len() <= 3 {
+                    println!("reconciler: refusing to drain a voter below 3 voters");
+                    continue;
+                }
+                println!("reconciler: removing drained voter from the group");
+                if let Err(e) = raft
+                    .change_membership(ChangeMembers::RemoveVoters([*id].into()), false)
+                    .await
+                {
+                    println!("reconciler: removal pending (will retry): {e}");
+                }
+            } else {
+                println!("reconciler: removing drained learner from the group");
+                if let Err(e) = raft
+                    .change_membership(ChangeMembers::RemoveNodes([*id].into()), false)
+                    .await
+                {
+                    println!("reconciler: learner removal pending (will retry): {e}");
+                }
+            }
+        }
 
         for (id, addr) in &desired {
             if !in_group.contains(id) {

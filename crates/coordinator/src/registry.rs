@@ -30,6 +30,8 @@ pub struct NodeSnapshot {
     pub role: NodeRole,
     pub shard_id: u32,
     pub since_seen: Duration,
+    /// Deliberately marked for removal from its consensus group.
+    pub draining: bool,
 }
 
 impl NodeSnapshot {
@@ -40,6 +42,7 @@ impl NodeSnapshot {
             role: info.role,
             shard_id,
             since_seen: now.saturating_duration_since(info.last_seen),
+            draining: false,
         }
     }
 }
@@ -61,6 +64,10 @@ pub struct Registry {
     liveness_timeout: Duration,
     leaders: HashMap<u32, NodeInfo>,
     followers: HashMap<u32, Vec<NodeInfo>>,
+    /// Nodes deliberately marked for removal from their consensus group. Sticky until the
+    /// node disappears from the registry (reaped after its process is stopped), so a drain
+    /// can't be forgotten by a re-registration.
+    draining: std::collections::HashSet<String>,
 }
 
 impl Registry {
@@ -71,6 +78,7 @@ impl Registry {
             liveness_timeout: DEFAULT_LIVENESS_TIMEOUT,
             leaders: HashMap::new(),
             followers: HashMap::new(),
+            draining: std::collections::HashSet::new(),
         }
     }
 
@@ -239,6 +247,11 @@ impl Registry {
             }
         }
 
+        // A reaped node's drain marker has served its purpose.
+        for node in &removed {
+            self.draining.remove(&node.node_id);
+        }
+
         removed
     }
 
@@ -287,15 +300,31 @@ impl Registry {
         Some(shard)
     }
 
+    /// Deliberately mark a node for removal from its consensus group. Returns false if the
+    /// node isn't known. Sticky: survives re-registration; cleaned up when the node is
+    /// finally reaped.
+    pub fn mark_draining(&mut self, node_id: &str) -> bool {
+        let known = self.leaders.values().any(|n| n.node_id == node_id)
+            || self.followers.values().flatten().any(|n| n.node_id == node_id);
+        if known {
+            self.draining.insert(node_id.to_string());
+        }
+        known
+    }
+
     /// A point-in-time view of every known node, for observability (dashboards/tooling).
     pub fn snapshot(&self, now: Instant) -> Vec<NodeSnapshot> {
         let mut nodes = Vec::new();
         for (&shard_id, info) in &self.leaders {
-            nodes.push(NodeSnapshot::from_info(info, shard_id, now));
+            let mut snap = NodeSnapshot::from_info(info, shard_id, now);
+            snap.draining = self.draining.contains(&snap.node_id);
+            nodes.push(snap);
         }
         for (&shard_id, followers) in &self.followers {
             for info in followers {
-                nodes.push(NodeSnapshot::from_info(info, shard_id, now));
+                let mut snap = NodeSnapshot::from_info(info, shard_id, now);
+                snap.draining = self.draining.contains(&snap.node_id);
+                nodes.push(snap);
             }
         }
         // Stable order for consumers: by shard, leaders first, then node id.
@@ -535,6 +564,27 @@ mod tests {
         assert_eq!(reg.report_raft_leader("m2", t0), None);
         // An unknown node changes nothing.
         assert_eq!(reg.report_raft_leader("ghost", t0), None);
+    }
+
+    #[test]
+    fn draining_is_marked_sticky_and_cleared_on_reap() {
+        let mut reg = Registry::new(1);
+        let t0 = Instant::now();
+        reg.register_at(req("m1", 0, NodeRole::Follower), t0);
+
+        assert!(!reg.mark_draining("ghost")); // unknown nodes can't be drained
+        assert!(reg.mark_draining("m1"));
+        assert!(reg.members_of(0, t0)[0].draining);
+
+        // Sticky across re-registration.
+        reg.register_at(req("m1", 0, NodeRole::Follower), t0);
+        assert!(reg.members_of(0, t0)[0].draining);
+
+        // Cleared once the node is reaped (its process was stopped after removal).
+        let later = t0.checked_add(Duration::from_secs(60)).unwrap();
+        reg.reap_dead(later, Duration::from_secs(30));
+        reg.register_at(req("m1", 0, NodeRole::Follower), later);
+        assert!(!reg.members_of(0, later)[0].draining);
     }
 
     #[test]

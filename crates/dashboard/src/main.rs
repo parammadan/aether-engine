@@ -26,7 +26,7 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
 use common::pb::coordinator_client::CoordinatorClient;
-use common::pb::{ClusterStateRequest, NodeRole, SearchRequest};
+use common::pb::{ClusterStateRequest, DrainRequest, NodeRole, SearchRequest};
 use serde_json::json;
 use supervisor::Supervisor;
 
@@ -93,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/ws", get(ws_upgrade))
         .route("/api/state", get(api_state))
         .route("/api/kill/:node_id", post(api_kill))
+        .route("/api/drain/:node_id", post(api_drain))
         .route("/api/add-follower/:shard_id", post(api_add_follower))
         .with_state(app.clone());
 
@@ -160,6 +161,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                         "shard_id": node.shard_id,
                         "millis_since_seen": node.millis_since_seen,
                         "has_process": managed.contains(&node.node_id),
+                        "draining": node.draining,
                     }));
                 }
             }
@@ -233,6 +235,27 @@ async fn api_kill(State(app): State<Arc<App>>, Path(node_id): Path<String>) -> i
         (axum::http::StatusCode::OK, "killed")
     } else {
         (axum::http::StatusCode::NOT_FOUND, "no such managed node")
+    }
+}
+
+/// Deliberately drain a node: the coordinator marks it, its group's leader removes it from
+/// consensus. The tile shows "draining"; once its store plateaus, kill it — a relocation.
+async fn api_drain(State(app): State<Arc<App>>, Path(node_id): Path<String>) -> impl IntoResponse {
+    let endpoint = format!("http://{}", app.supervisor.coordinator_addr);
+    match CoordinatorClient::connect(endpoint).await {
+        Ok(mut client) => match client.drain_node(DrainRequest { node_id: node_id.clone() }).await {
+            Ok(resp) => {
+                let resp = resp.into_inner();
+                if resp.ok {
+                    app.push_event(format!("DRAINING {node_id} — leader will remove it from the group"));
+                    (axum::http::StatusCode::OK, resp.message)
+                } else {
+                    (axum::http::StatusCode::NOT_FOUND, resp.message)
+                }
+            }
+            Err(e) => (axum::http::StatusCode::BAD_GATEWAY, e.to_string()),
+        },
+        Err(e) => (axum::http::StatusCode::BAD_GATEWAY, e.to_string()),
     }
 }
 

@@ -223,6 +223,21 @@ service Coordinator {
   // this to discover their raft group: register, poll until the group is complete, then the
   // member with the smallest raft id initializes it (deterministic over the same set).
   rpc ListShardMembers(ShardMembersRequest) returns (ShardMembersResponse);
+
+  // Deliberately mark a node for removal from its shard's consensus group. Removal is
+  // OPERATOR intent, never inferred from liveness (a flapping heartbeat must not be able to
+  // shrink quorum); the group's elected leader executes it, refusing to go below a safe
+  // voter count. Combined with a join, this is a live replica relocation.
+  rpc DrainNode(DrainRequest) returns (DrainResponse);
+}
+
+message DrainRequest {
+  string node_id = 1;
+}
+
+message DrainResponse {
+  bool ok = 1;
+  string message = 2;
 }
 
 message ShardMembersRequest {
@@ -241,6 +256,8 @@ message NodeState {
   NodeRole role = 3;
   uint32 shard_id = 4;
   uint64 millis_since_seen = 5; // age of the last registration/heartbeat
+  bool draining = 6; // marked for deliberate removal; its group's leader will remove it
+                     // from consensus membership and it must never be re-added
 }
 
 message ClusterStateResponse {

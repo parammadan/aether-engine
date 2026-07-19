@@ -7,7 +7,8 @@ use std::time::Instant;
 use common::pb::coordinator_server::Coordinator;
 use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::{
-    ClusterStateRequest, ClusterStateResponse, HeartbeatRequest, HeartbeatResponse,
+    ClusterStateRequest, ClusterStateResponse, DrainRequest, DrainResponse, HeartbeatRequest,
+    HeartbeatResponse,
     ListReplicasRequest, ListReplicasResponse, NodeState, RegisterNodeRequest,
     RegisterNodeResponse, SearchRequest, SearchResponse, SearchUpdate, ShardMembersRequest,
     ShardMembersResponse,
@@ -132,9 +133,29 @@ impl Coordinator for CoordinatorService {
                 role: n.role as i32,
                 shard_id: n.shard_id,
                 millis_since_seen: n.since_seen.as_millis() as u64,
+                draining: n.draining,
             })
             .collect();
         Ok(Response::new(ShardMembersResponse { members }))
+    }
+
+    async fn drain_node(
+        &self,
+        request: Request<DrainRequest>,
+    ) -> Result<Response<DrainResponse>, Status> {
+        let node_id = request.into_inner().node_id;
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|_| Status::internal("registry lock poisoned"))?;
+        let ok = registry.mark_draining(&node_id);
+        let message = if ok {
+            println!("coordinator: '{node_id}' marked draining");
+            format!("'{node_id}' marked draining; its group leader will remove it")
+        } else {
+            format!("unknown node '{node_id}'")
+        };
+        Ok(Response::new(DrainResponse { ok, message }))
     }
 
     async fn get_cluster_state(
@@ -154,6 +175,7 @@ impl Coordinator for CoordinatorService {
                 role: n.role as i32,
                 shard_id: n.shard_id,
                 millis_since_seen: n.since_seen.as_millis() as u64,
+                draining: n.draining,
             })
             .collect();
         Ok(Response::new(ClusterStateResponse {

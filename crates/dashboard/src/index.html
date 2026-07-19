@@ -81,6 +81,7 @@
   function statusOf(node) {
     // Icon + word, never color alone. Thresholds mirror the cluster's own liveness config.
     if (!node.has_process) return { cls: "dead", icon: "✕", word: "no process" };
+    if (node.draining) return { cls: "stale", icon: "◌", word: "draining" };
     if (node.millis_since_seen > 3000) return { cls: "stale", icon: "▲", word: "stale " + (node.millis_since_seen/1000).toFixed(0) + "s" };
     return { cls: "live", icon: "●", word: "live" };
   }
@@ -123,7 +124,8 @@
               <span class="meta">${n.address} · seen ${(n.millis_since_seen/1000).toFixed(1)}s ago</span>
               <span class="status ${st.cls}"><span class="dot">${st.icon}</span>${st.word}</span>
             </div>
-            <div class="row" style="margin-top:6px; justify-content:flex-end;">
+            <div class="row" style="margin-top:6px; justify-content:flex-end; gap:6px;">
+              ${n.has_process && !n.draining ? `<button onclick="drain('${n.node_id}')">drain</button>` : ""}
               ${n.has_process ? `<button class="kill" onclick="kill('${n.node_id}')">kill −9</button>` : ""}
             </div>
           </div>`;
@@ -139,6 +141,7 @@
   }
 
   async function kill(nodeId) { await fetch(`/api/kill/${nodeId}`, { method: "POST" }); }
+  async function drain(nodeId) { await fetch(`/api/drain/${nodeId}`, { method: "POST" }); }
   async function addFollower(shard) { await fetch(`/api/add-follower/${shard}`, { method: "POST" }); }
 
   function connect() {
