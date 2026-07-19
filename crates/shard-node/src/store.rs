@@ -53,6 +53,13 @@ impl ShardStore {
         self.vector.dim()
     }
 
+    /// Run vector search on the two-tier quantized pipeline (~30x-compressed candidate
+    /// scan, exact rescore) instead of flat/HNSW.
+    pub fn with_quantized(mut self, on: bool) -> Self {
+        self.vector.set_quantized(on);
+        self
+    }
+
     /// Index one document in both views.
     pub fn insert(&mut self, doc: FlightDocument) {
         self.vector.insert(doc.clone());

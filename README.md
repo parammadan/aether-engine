@@ -77,6 +77,13 @@ select it with `AETHER_EMBEDDER=onnx AETHER_ONNX_MODEL_DIR=...`. Every node in a
 must use the same embedder: embeddings are a cross-node contract, and shards reject query
 vectors whose dimension doesn't match their own.
 
+Vectors can be **binary-quantized** (AETHER_VECTOR=quantized): each dimension collapses to
+its sign bit plus a per-vector correction — 1536 B becomes 52 B (~30x) — and search runs
+in two tiers: a Hamming scan over the compressed forms (XOR+popcount, measured ~5 ns/doc,
+~69x faster than exact) generates 4x-oversampled candidates, which are then rescored with
+exact f32 dot products. Measured on a clustered corpus: recall@10 of 1.0 versus the exact
+scan, at 29.5x compression of the scanned representation.
+
 ## Consensus
 
 Shards can run under real consensus via [`openraft`](https://github.com/databendlabs/openraft)

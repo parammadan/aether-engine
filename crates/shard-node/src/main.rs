@@ -77,6 +77,12 @@ fn build_source(node_id: &str) -> Box<dyn FlightSource> {
 /// cluster MUST use the same embedder and model — embeddings are a cross-node contract, and
 /// the shard rejects query vectors whose dimension doesn't match its own.
 fn build_store() -> Result<ShardStore, Box<dyn std::error::Error + Send + Sync>> {
+    // AETHER_VECTOR=quantized runs vector search on the two-tier quantized pipeline
+    // (binary candidate scan, exact rescore).
+    let quantized = std::env::var("AETHER_VECTOR").as_deref() == Ok("quantized");
+    if quantized {
+        println!("vector search: quantized (binary scan + exact rescore)");
+    }
     if std::env::var("AETHER_EMBEDDER").as_deref() == Ok("onnx") {
         #[cfg(feature = "onnx")]
         {
@@ -84,12 +90,12 @@ fn build_store() -> Result<ShardStore, Box<dyn std::error::Error + Send + Sync>>
                 .map_err(|_| "AETHER_EMBEDDER=onnx requires AETHER_ONNX_MODEL_DIR")?;
             let embedder = common::embed_onnx::OnnxEmbedder::from_dir(std::path::Path::new(&dir))?;
             println!("embedder: onnx model at {dir} (dim {})", common::embed::Embedder::dim(&embedder));
-            return Ok(ShardStore::with_embedder(Arc::new(embedder)));
+            return Ok(ShardStore::with_embedder(Arc::new(embedder)).with_quantized(quantized));
         }
         #[cfg(not(feature = "onnx"))]
         return Err("AETHER_EMBEDDER=onnx, but this binary was built without --features onnx".into());
     }
-    Ok(ShardStore::new())
+    Ok(ShardStore::new().with_quantized(quantized))
 }
 
 #[tokio::main]

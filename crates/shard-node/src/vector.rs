@@ -18,6 +18,8 @@ use common::embed::{dot, Embedder, HashEmbedder};
 use common::pb::FlightDocument;
 use hnsw_rs::prelude::*;
 
+use crate::quant::{QuantizedVector, OVERSAMPLE};
+
 /// HNSW construction/search parameters. Modest values tuned for an in-memory index of tens
 /// of thousands of points; revisit with measurements if the corpus grows.
 const MAX_CONNECTIONS: usize = 16; // M: graph degree per layer
@@ -55,8 +57,15 @@ pub struct VectorIndex {
     /// Current embeddable text per slot, to detect when a re-observation needs a new vector.
     texts: Vec<String>,
     /// Current embedding per slot (superseded vectors are NOT kept here, unlike the graph).
-    /// Powers the exact-scan path below [`FLAT_SEARCH_THRESHOLD`].
+    /// Powers the exact-scan path below [`FLAT_SEARCH_THRESHOLD`] and the rescore tier of
+    /// quantized search.
     slot_vectors: Vec<Vec<f32>>,
+    /// Binary-quantized form of each slot's current embedding (~30x smaller; scanned with
+    /// XOR+popcount). Kept in lockstep with `slot_vectors`.
+    quantized: Vec<QuantizedVector>,
+    /// When set, search runs the two-tier quantized pipeline (Hamming candidates → exact
+    /// rescore) instead of flat/HNSW.
+    quantized_mode: bool,
     /// `icao24 -> slot`, the upsert key.
     by_key: HashMap<String, usize>,
     /// Total vectors ever inserted into the graph (== docs + superseded duplicates). Used to
@@ -82,6 +91,8 @@ impl VectorIndex {
             texts: Vec::new(),
             by_key: HashMap::new(),
             slot_vectors: Vec::new(),
+            quantized: Vec::new(),
+            quantized_mode: false,
             vectors_total: 0,
             hnsw: Hnsw::new(MAX_CONNECTIONS, CAPACITY_HINT, MAX_LAYERS, EF_CONSTRUCTION, DistCosine {}),
         }
@@ -117,6 +128,7 @@ impl VectorIndex {
                 let vector = self.embedder.embed(&text);
                 self.hnsw.insert((&vector, slot));
                 self.vectors_total += 1;
+                self.quantized[slot] = QuantizedVector::quantize(&vector);
                 self.slot_vectors[slot] = vector;
                 self.texts[slot] = text;
             }
@@ -128,9 +140,16 @@ impl VectorIndex {
         self.hnsw.insert((&vector, slot));
         self.vectors_total += 1;
         self.by_key.insert(doc.icao24.clone(), slot);
+        self.quantized.push(QuantizedVector::quantize(&vector));
         self.slot_vectors.push(vector);
         self.docs.push(doc);
         self.texts.push(text);
+    }
+
+    /// Switch search to the two-tier quantized pipeline (Hamming candidate scan over the
+    /// ~30x-compressed forms, exact rescore of the survivors).
+    pub fn set_quantized(&mut self, on: bool) {
+        self.quantized_mode = on;
     }
 
     /// k-nearest-neighbour search for an already-embedded query vector. Returns hits scored
@@ -139,11 +158,48 @@ impl VectorIndex {
         if k == 0 || self.docs.is_empty() {
             return Vec::new();
         }
-        if self.docs.len() <= FLAT_SEARCH_THRESHOLD {
+        if self.quantized_mode {
+            self.search_quantized(query, k)
+        } else if self.docs.len() <= FLAT_SEARCH_THRESHOLD {
             self.search_flat(query, k)
         } else {
             self.search_hnsw(query, k)
         }
+    }
+
+    /// Two-tier quantized search: tier 1 Hamming-ranks every slot's compressed form
+    /// (XOR+popcount over u64 words — the full scan touches ~30x less memory than f32);
+    /// tier 2 rescores the `k × OVERSAMPLE` best candidates with exact dot products.
+    fn search_quantized(&self, query: &[f32], k: usize) -> Vec<VectorHit<'_>> {
+        let q = QuantizedVector::quantize(query);
+
+        // Tier 1: cheap candidate generation over the bits.
+        let mut candidates: Vec<(u32, usize)> = self
+            .quantized
+            .iter()
+            .enumerate()
+            .map(|(slot, d)| (q.hamming(d), slot))
+            .collect();
+        let keep = (k * OVERSAMPLE).min(candidates.len());
+        candidates.sort_unstable_by_key(|(h, _)| *h);
+        candidates.truncate(keep);
+
+        // Tier 2: exact rescore of the survivors only.
+        let mut hits: Vec<VectorHit<'_>> = candidates
+            .into_iter()
+            .map(|(_, slot)| VectorHit {
+                doc: &self.docs[slot],
+                score: dot(query, &self.slot_vectors[slot]) as f64,
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.doc.icao24.cmp(&b.doc.icao24))
+        });
+        hits.truncate(k);
+        hits
     }
 
     /// Exact scan over the current vector per slot: deterministic, no superseded duplicates,
@@ -303,6 +359,32 @@ mod tests {
             hits.iter().any(|h| h.doc.icao24 == "id0042"),
             "expected id0042 within the top 10 approximate neighbours"
         );
+    }
+
+    #[test]
+    fn quantized_mode_agrees_with_exact_search_on_the_top_hit() {
+        let mut exact = VectorIndex::new();
+        let mut quant = VectorIndex::new();
+        quant.set_quantized(true);
+        for i in 0..40 {
+            let d = doc(
+                &format!("id{i:04}"),
+                &format!("FL{i:04}"),
+                if i % 2 == 0 { "United States" } else { "France" },
+                "XXX",
+                if i % 2 == 0 { "Boeing 737" } else { "Airbus A320" },
+            );
+            exact.insert(d.clone());
+            quant.insert(d);
+        }
+
+        let query = HashEmbedder.embed("FL0006 United States XXX Boeing 737");
+        let exact_top = exact.search(&query, 1);
+        let quant_top = quant.search(&query, 1);
+        assert_eq!(exact_top[0].doc.icao24, "id0006");
+        // The two-tier pipeline rescores with exact math, so the top hit must agree.
+        assert_eq!(quant_top[0].doc.icao24, exact_top[0].doc.icao24);
+        assert!((quant_top[0].score - exact_top[0].score).abs() < 1e-6);
     }
 
     #[test]
