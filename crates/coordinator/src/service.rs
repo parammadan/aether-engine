@@ -5,7 +5,6 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use common::pb::coordinator_server::Coordinator;
-use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::{
     ClusterStateRequest, ClusterStateResponse, DrainRequest, DrainResponse, HeartbeatRequest,
     HeartbeatResponse,
@@ -259,14 +258,12 @@ impl Coordinator for CoordinatorService {
         tokio::spawn(async move {
             let mut merge = ProgressiveMerge::new(shards_queried, limit);
 
-            // Query every leader concurrently; fold + emit an update as each one reports.
+            // Query every leader concurrently under the fan-out deadline; fold + emit an
+            // update as each one reports. A slow shard times out like a dead one, so the
+            // final `complete` update is bounded too.
             let mut set = JoinSet::new();
             for addr in leaders {
-                let query = req.clone();
-                set.spawn(async move {
-                    let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
-                    client.search(query).await.ok().map(|r| r.into_inner())
-                });
+                set.spawn(crate::fanout::query_leader(addr, req.clone()));
             }
 
             while let Some(joined) = set.join_next().await {

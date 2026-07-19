@@ -5,10 +5,50 @@
 //! async [`scatter_gather`] that does the concurrent RPCs.
 
 use std::cmp::Ordering;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use common::pb::shard_search_client::ShardSearchClient;
 use common::pb::{SearchHit, SearchRequest, SearchResponse, SearchUpdate};
 use tokio::task::JoinSet;
+
+/// Per-shard fan-out deadline (`AETHER_SHARD_TIMEOUT_MS`, default 2000ms). One outer
+/// timeout bounds connect + request together, so a shard that is *slow* — hung, GC-ing,
+/// half-partitioned — is bounded exactly like one that is dead: without this, a query's
+/// tail latency is the sickest node's latency. Read once; the deadline is process config.
+pub fn shard_timeout() -> Duration {
+    static CELL: OnceLock<Duration> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        let ms = std::env::var("AETHER_SHARD_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2000);
+        Duration::from_millis(ms)
+    })
+}
+
+/// Query one shard leader under the fan-out deadline. Both failure modes collapse into
+/// the same partial-coverage result (`None`), but the log line distinguishes them —
+/// `reason=timeout` (up, but slow) vs `reason=unreachable` (down or erroring) — because
+/// an operator debugging coverage drops needs to know which problem they have.
+pub(crate) async fn query_leader(addr: String, req: SearchRequest) -> Option<SearchResponse> {
+    let attempt = tokio::time::timeout(shard_timeout(), async {
+        let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
+        client.search(req).await.ok().map(|r| r.into_inner())
+    })
+    .await;
+    match attempt {
+        Ok(Some(resp)) => Some(resp),
+        Ok(None) => {
+            eprintln!("fanout: shard omitted addr={addr} reason=unreachable");
+            None
+        }
+        Err(_) => {
+            eprintln!("fanout: shard omitted addr={addr} reason=timeout");
+            None
+        }
+    }
+}
 
 /// Global ranking of hits: score descending, ties broken by `icao24` for a stable order.
 fn cmp_hits(a: &SearchHit, b: &SearchHit) -> Ordering {
@@ -145,9 +185,23 @@ pub async fn scatter_gather_vector(
     for addr in leaders {
         let req = request.clone();
         set.spawn(async move {
-            let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
-            let resp = client.vector_search(req).await.ok()?;
-            Some(resp.into_inner())
+            let attempt = tokio::time::timeout(shard_timeout(), async {
+                let mut client =
+                    ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
+                client.vector_search(req).await.ok().map(|r| r.into_inner())
+            })
+            .await;
+            match attempt {
+                Ok(Some(resp)) => Some(resp),
+                Ok(None) => {
+                    eprintln!("fanout: shard omitted addr={addr} reason=unreachable");
+                    None
+                }
+                Err(_) => {
+                    eprintln!("fanout: shard omitted addr={addr} reason=timeout");
+                    None
+                }
+            }
         });
     }
     let mut responses = Vec::new();
@@ -167,11 +221,7 @@ pub async fn scatter_gather(leaders: Vec<String>, request: SearchRequest) -> Vec
 
     for addr in leaders {
         let req = request.clone();
-        set.spawn(async move {
-            let mut client = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
-            let resp = client.search(req).await.ok()?;
-            Some(resp.into_inner())
-        });
+        set.spawn(query_leader(addr, req));
     }
 
     let mut responses = Vec::new();
