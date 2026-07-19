@@ -32,3 +32,5 @@ onnx = ["common/onnx"]
 tokio-stream = { version = "0.1", features = ["net"] }
 # Dev-only: run a real coordinator in-process to test the registration client end-to-end.
 coordinator = { path = "../coordinator" }
+# Dev-only fault injection: controllable TCP proxies between raft peers.
+testkit = { path = "../testkit" }
