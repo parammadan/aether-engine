@@ -34,6 +34,11 @@ const CAPACITY_HINT: usize = 100_000;
 /// its approximation once the corpus is large enough that a scan would hurt.
 const FLAT_SEARCH_THRESHOLD: usize = 256;
 
+/// Rebuild the graph once tombstones reach this fraction of live documents (and at least
+/// [`REBUILD_MIN_TOMBSTONES`]). Amortizes the O(n) rebuild cost across many cheap removes.
+const REBUILD_TOMBSTONE_RATIO: f64 = 0.25;
+const REBUILD_MIN_TOMBSTONES: usize = 16;
+
 /// A scored vector-search hit borrowing the stored document.
 pub struct VectorHit<'a> {
     pub doc: &'a FlightDocument,
@@ -68,6 +73,12 @@ pub struct VectorIndex {
     quantized_mode: bool,
     /// `icao24 -> slot`, the upsert key.
     by_key: HashMap<String, usize>,
+    /// Removed slots. HNSW can't delete a point, so a removed aircraft is TOMBSTONED —
+    /// filtered out of every search immediately (correct at once) — and the graph is
+    /// rebuilt without it once tombstones pass a threshold (the honest amortized cost of
+    /// no-delete HNSW). Between removal and rebuild the vector still sits in the graph but
+    /// never surfaces.
+    tombstoned: std::collections::HashSet<usize>,
     /// Total vectors ever inserted into the graph (== docs + superseded duplicates). Used to
     /// clamp search over-fetch: asking HNSW for more neighbours than the graph holds returns
     /// unreliable counts on tiny graphs.
@@ -90,6 +101,7 @@ impl VectorIndex {
             docs: Vec::new(),
             texts: Vec::new(),
             by_key: HashMap::new(),
+            tombstoned: std::collections::HashSet::new(),
             slot_vectors: Vec::new(),
             quantized: Vec::new(),
             quantized_mode: false,
@@ -103,13 +115,13 @@ impl VectorIndex {
         self.embedder.dim()
     }
 
-    /// Number of distinct documents (aircraft) indexed.
+    /// Number of distinct LIVE documents (aircraft) indexed — tombstoned slots don't count.
     pub fn len(&self) -> usize {
-        self.docs.len()
+        self.by_key.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.docs.is_empty()
+        self.by_key.is_empty()
     }
 
     /// The text a document is embedded from: the same fields the keyword index covers.
@@ -146,6 +158,51 @@ impl VectorIndex {
         self.texts.push(text);
     }
 
+    /// Remove one aircraft by `icao24`: tombstone its slot so it stops surfacing in search
+    /// immediately, and rebuild the graph without it once tombstones pass the threshold.
+    /// Returns whether it was present.
+    pub fn remove(&mut self, icao24: &str) -> bool {
+        let Some(slot) = self.by_key.remove(icao24) else {
+            return false;
+        };
+        self.tombstoned.insert(slot);
+        // Rebuild past a threshold: enough tombstones AND a meaningful fraction of the live
+        // set, so churn doesn't rebuild on every remove but garbage can't accumulate forever.
+        let live = self.by_key.len();
+        if self.tombstoned.len() >= REBUILD_MIN_TOMBSTONES
+            && self.tombstoned.len() as f64 >= (live.max(1) as f64) * REBUILD_TOMBSTONE_RATIO
+        {
+            self.rebuild();
+        }
+        true
+    }
+
+    /// Rebuild every backing structure from the live (non-tombstoned) documents: a fresh
+    /// HNSW graph, compacted slot vectors, and reset tombstones. The one genuinely O(n)
+    /// operation, amortized by the removal threshold.
+    fn rebuild(&mut self) {
+        let live: Vec<FlightDocument> = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| !self.tombstoned.contains(slot))
+            .map(|(_, d)| d.clone())
+            .collect();
+
+        self.docs.clear();
+        self.texts.clear();
+        self.slot_vectors.clear();
+        self.quantized.clear();
+        self.by_key.clear();
+        self.tombstoned.clear();
+        self.vectors_total = 0;
+        self.hnsw = Hnsw::new(MAX_CONNECTIONS, CAPACITY_HINT, MAX_LAYERS, EF_CONSTRUCTION, DistCosine {});
+
+        for doc in live {
+            self.insert(doc);
+        }
+    }
+
     /// Switch search to the two-tier quantized pipeline (Hamming candidate scan over the
     /// ~30x-compressed forms, exact rescore of the survivors).
     pub fn set_quantized(&mut self, on: bool) {
@@ -155,7 +212,7 @@ impl VectorIndex {
     /// k-nearest-neighbour search for an already-embedded query vector. Returns hits scored
     /// by cosine similarity, best first. `k == 0` returns nothing.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<VectorHit<'_>> {
-        if k == 0 || self.docs.is_empty() {
+        if k == 0 || self.by_key.is_empty() {
             return Vec::new();
         }
         if self.quantized_mode {
@@ -173,11 +230,12 @@ impl VectorIndex {
     fn search_quantized(&self, query: &[f32], k: usize) -> Vec<VectorHit<'_>> {
         let q = QuantizedVector::quantize(query);
 
-        // Tier 1: cheap candidate generation over the bits.
+        // Tier 1: cheap candidate generation over the bits (skipping tombstoned slots).
         let mut candidates: Vec<(u32, usize)> = self
             .quantized
             .iter()
             .enumerate()
+            .filter(|(slot, _)| !self.tombstoned.contains(slot))
             .map(|(slot, d)| (q.hamming(d), slot))
             .collect();
         let keep = (k * OVERSAMPLE).min(candidates.len());
@@ -209,6 +267,7 @@ impl VectorIndex {
             .slot_vectors
             .iter()
             .enumerate()
+            .filter(|(slot, _)| !self.tombstoned.contains(slot))
             .map(|(slot, v)| VectorHit {
                 doc: &self.docs[slot],
                 score: dot(query, v) as f64,
@@ -237,6 +296,10 @@ impl VectorIndex {
         let mut best: Vec<VectorHit<'_>> = Vec::with_capacity(k);
         let mut seen = std::collections::HashSet::new();
         for n in neighbours {
+            // Skip tombstoned slots (removed but still in the graph until the next rebuild).
+            if self.tombstoned.contains(&n.d_id) {
+                continue;
+            }
             // Neighbours arrive best-first; keep the first (closest) hit per slot.
             if seen.insert(n.d_id) {
                 best.push(VectorHit {
@@ -359,6 +422,76 @@ mod tests {
             hits.iter().any(|h| h.doc.icao24 == "id0042"),
             "expected id0042 within the top 10 approximate neighbours"
         );
+    }
+
+    #[test]
+    fn removed_aircraft_disappear_from_search_immediately() {
+        let mut idx = sample();
+        let query = HashEmbedder.embed("Boeing United States"); // matches a1 and c3
+        assert!(idx.search(&query, 3).iter().any(|h| h.doc.icao24 == "a1"));
+
+        assert!(idx.remove("a1"));
+        assert!(!idx.remove("a1"), "double remove is a no-op");
+        assert_eq!(idx.len(), 2);
+        // Gone from results the instant it's removed — before any rebuild.
+        assert!(idx.search(&query, 3).iter().all(|h| h.doc.icao24 != "a1"));
+    }
+
+    /// 8.2 acceptance: after heavy delete + rebuild, recall@10 for surviving documents
+    /// matches a freshly-built index of only the survivors — the rebuild reclaims the
+    /// graph without degrading search over what remains.
+    #[test]
+    fn recall_survives_heavy_delete_and_rebuild() {
+        let n = 400;
+        let make = |i: usize| {
+            doc(
+                &format!("id{i:04}"),
+                &format!("FL{i:04}"),
+                if i % 3 == 0 { "United States" } else { "France" },
+                "XXX",
+                if i % 2 == 0 { "Boeing 737" } else { "Airbus A320" },
+            )
+        };
+
+        let mut idx = VectorIndex::new();
+        for i in 0..n {
+            idx.insert(make(i));
+        }
+        // Remove every even id — far past the rebuild threshold, so at least one rebuild
+        // fires and the graph is compacted to the survivors (the odd ids).
+        for i in (0..n).step_by(2) {
+            idx.remove(&format!("id{i:04}"));
+        }
+        assert_eq!(idx.len(), n / 2);
+
+        // A fresh index of exactly the survivors: the recall reference.
+        let mut fresh = VectorIndex::new();
+        for i in (1..n).step_by(2) {
+            fresh.insert(make(i));
+        }
+
+        // For a sample of surviving queries, the post-delete index returns the same true
+        // nearest (its own vector) that the fresh index does — no recall lost to tombstones.
+        let mut agree = 0;
+        let probes = (1..n).step_by(2).take(40);
+        let mut total = 0;
+        for i in probes {
+            total += 1;
+            let q = HashEmbedder.embed(&format!("FL{i:04} {} XXX {}",
+                if i % 3 == 0 { "United States" } else { "France" },
+                if i % 2 == 0 { "Boeing 737" } else { "Airbus A320" }));
+            let survived = idx.search(&q, 10);
+            // The removed evens must never appear.
+            assert!(survived.iter().all(|h| h.doc.icao24.trim_start_matches("id").parse::<usize>().unwrap() % 2 == 1),
+                "a tombstoned even id surfaced in search");
+            let top_matches = survived.iter().any(|h| h.doc.icao24 == format!("id{i:04}"));
+            let fresh_top = fresh.search(&q, 10).iter().any(|h| h.doc.icao24 == format!("id{i:04}"));
+            if top_matches == fresh_top {
+                agree += 1;
+            }
+        }
+        // HNSW is approximate, so demand strong agreement, not perfection.
+        assert!(agree as f64 >= 0.9 * total as f64, "recall parity too low: {agree}/{total}");
     }
 
     #[test]

@@ -66,6 +66,16 @@ impl ShardStore {
         self.keyword.insert(doc);
     }
 
+    /// Remove one aircraft by `icao24` from both views. Returns whether it was present.
+    /// Keeps the two indexes in lockstep — a document is gone lexically AND semantically,
+    /// or from neither.
+    pub fn remove(&mut self, icao24: &str) -> bool {
+        let k = self.keyword.remove(icao24);
+        let v = self.vector.remove(icao24);
+        debug_assert_eq!(k, v, "keyword and vector indexes disagree on presence of {icao24}");
+        k
+    }
+
     /// Keyword search (see [`InvertedIndex::search`]).
     pub fn search(&self, query: &str, limit: usize) -> SearchResults<'_> {
         self.keyword.search(query, limit)
