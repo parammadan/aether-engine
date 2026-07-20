@@ -191,12 +191,26 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 Ok(resp) => {
                     let r = resp.into_inner();
                     app.query_ok.fetch_add(1, Ordering::Relaxed);
+                    // Surface the provenance manifest so the panel shows coverage, drops,
+                    // freshness, and the placement version behind each live query.
+                    let provenance = r.manifest.as_ref().map(|m| {
+                        json!({
+                            "summary": common::client::manifest_summary(m),
+                            "omitted": m.omitted.iter()
+                                .map(|o| json!({ "address": o.address, "reason": o.reason }))
+                                .collect::<Vec<_>>(),
+                            "deduped": m.deduped,
+                            "freshest_observed_at": m.freshest_observed_at,
+                            "placement_version": m.placement_version,
+                        })
+                    });
                     last_query = json!({
                         "ok": true,
                         "total_matched": r.total_matched,
                         "answered": r.shards_answered,
                         "queried": r.shards_queried,
                         "ms": t0.elapsed().as_millis() as u64,
+                        "provenance": provenance,
                     });
                 }
                 Err(status) => {

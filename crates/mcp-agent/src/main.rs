@@ -83,10 +83,16 @@ fn format_hits(resp: &common::pb::SearchResponse) -> String {
     );
     for hit in &resp.hits {
         let d = hit.document.clone().unwrap_or_default();
+        let via = hit.provenance.as_ref().map(|p| p.source_group.as_str()).unwrap_or("?");
         out.push_str(&format!(
-            "- {} {} ({} -> {}) {} score={:.3}\n",
+            "- {} {} ({} -> {}) {} score={:.3} [via {via}]\n",
             d.icao24, d.callsign, d.origin, d.destination, d.aircraft_type, hit.score
         ));
+    }
+    // The agent can quote its own audit trail: which shards answered, what was dropped,
+    // how fresh the data is. An answer built on this inherits the provenance for free.
+    if let Some(m) = &resp.manifest {
+        out.push_str(&format!("\nprovenance: {}\n", common::client::manifest_summary(m)));
     }
     out
 }

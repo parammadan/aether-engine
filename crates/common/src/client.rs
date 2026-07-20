@@ -32,6 +32,35 @@ pub fn coordinator_addrs(default: &str) -> Vec<String> {
     parse_addr_list(&raw, default)
 }
 
+/// A one-line, human-readable summary of a query manifest, for CLIs and agents: coverage,
+/// what was dropped and why, dedup count, freshness age, and the placement version. The
+/// same auditable facts a stranger would need to trust the result.
+pub fn manifest_summary(m: &crate::pb::QueryManifest) -> String {
+    let mut parts = vec![format!("answered {}/{} shards", m.shards_answered, m.shards_queried)];
+    if !m.omitted.is_empty() {
+        let omitted: Vec<String> =
+            m.omitted.iter().map(|o| format!("{} ({})", o.address, o.reason)).collect();
+        parts.push(format!("omitted: {}", omitted.join(", ")));
+    }
+    if m.deduped > 0 {
+        parts.push(format!("{} cross-shard duplicates dropped", m.deduped));
+    }
+    if m.freshest_observed_at > 0 {
+        let age_ms = now_ms().saturating_sub(m.freshest_observed_at);
+        parts.push(format!("freshest {}s old", age_ms / 1000));
+    }
+    parts.push(format!("placement v{}", m.placement_version));
+    parts.push(format!("{}ms", m.elapsed_ms));
+    parts.join(" · ")
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Connect to the first coordinator in the list that accepts the connection.
 pub async fn connect_first_healthy(
     addrs: &[String],
