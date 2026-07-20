@@ -183,4 +183,29 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+// NLQ search bar: POST the question to /api/ask, show the composed answer + evidence.
+const askForm = $("ask-form");
+if (askForm) {
+  askForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const q = $("ask-input").value.trim();
+    if (!q) return;
+    const out = $("ask-answer");
+    out.textContent = "thinking…";
+    try {
+      const r = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
+      const a = await r.json();
+      if (a.error) { out.textContent = a.error; return; }
+      let text = a.answer || "";
+      if (a.provenance && a.provenance.length) {
+        text += "\n\n— evidence —\n" + a.provenance.map((p, i) => `  [${i + 1}] ${p}`).join("\n");
+      }
+      if (a.budget_exhausted) text += "\n\n(budget reached — partial answer)";
+      out.textContent = text;
+    } catch {
+      out.textContent = "request failed";
+    }
+  };
+}
+
 connect();

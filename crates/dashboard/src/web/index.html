@@ -13,6 +13,16 @@
     <span class="conn muted" id="placement"></span>
   </header>
 
+  <section class="panel wide" style="margin:16px 20px 0">
+    <h2>Ask <span class="muted">(natural-language query → engine tools → answer + provenance)</span></h2>
+    <form id="ask-form" style="display:flex;gap:8px">
+      <input id="ask-input" placeholder="e.g. how many flights? · altitude percentiles · flights by aircraft · is the cluster healthy?"
+             style="flex:1;background:var(--surface-2);border:1px solid var(--border);color:var(--text-1);border-radius:6px;padding:8px 10px;font-family:var(--sans)">
+      <button type="submit" style="background:var(--series-1);border:none;color:#fff;border-radius:6px;padding:8px 16px;cursor:pointer">Ask</button>
+    </form>
+    <pre id="ask-answer" style="white-space:pre-wrap;font-family:var(--mono);font-size:12px;color:var(--text-2);margin:10px 0 0"></pre>
+  </section>
+
   <main>
     <section class="panel">
       <h2>Query throughput</h2>

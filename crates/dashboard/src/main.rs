@@ -111,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/app.js", get(app_js))
         .route("/styles.css", get(styles_css))
         .route("/ws", get(ws_upgrade))
+        .route("/api/ask", get(api_ask))
         .route("/api/state", get(api_state))
         .route("/api/kill/:node_id", post(api_kill))
         .route("/api/drain/:node_id", post(api_drain))
@@ -363,6 +364,28 @@ async fn app_js() -> impl IntoResponse {
 
 async fn styles_css() -> impl IntoResponse {
     ([("content-type", "text/css; charset=utf-8")], include_str!("web/styles.css"))
+}
+
+/// The NLQ search bar: run one question through the read-only tool loop and return the
+/// composed answer + its provenance evidence. Uses the live Bedrock model when configured
+/// (AETHER_BEDROCK_MODEL), else the offline heuristic planner — the loop, tools, and
+/// provenance composition are identical either way.
+async fn api_ask(axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>) -> impl IntoResponse {
+    let question = params.get("q").cloned().unwrap_or_default();
+    if question.trim().is_empty() {
+        return ([("content-type", "application/json")], json!({ "error": "empty question" }).to_string());
+    }
+    let answer = match nlq::bedrock::from_env().await {
+        Some(model) => nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await,
+        None => nlq::run(&nlq::HeuristicModel, &nlq::EngineTools, &question, nlq::Budget::default()).await,
+    };
+    let body = json!({
+        "answer": answer.text,
+        "provenance": answer.provenance,
+        "tool_calls": answer.tool_calls,
+        "budget_exhausted": answer.budget_exhausted,
+    });
+    ([("content-type", "application/json")], body.to_string())
 }
 
 async fn api_state(State(app): State<Arc<App>>) -> impl IntoResponse {

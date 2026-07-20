@@ -187,3 +187,78 @@ impl Model for FakeModel {
 }
 
 pub mod bedrock;
+
+// =============================================================================
+// Heuristic model: a keyword-routing planner for offline demos (no Bedrock).
+// =============================================================================
+
+/// A tiny rule-based planner: it maps a question to ONE tool call by keywords, then answers
+/// with that tool's output. Not an LLM — it makes the NLQ bar functional offline and in CI,
+/// exercising the real loop, real tools, and real provenance composition. The Bedrock model
+/// replaces it for genuine language understanding when configured.
+pub struct HeuristicModel;
+
+#[async_trait]
+impl Model for HeuristicModel {
+    async fn next_step(&self, turn: Turn<'_>) -> Result<Step, String> {
+        // Once a tool has answered, summarize it — one hop is enough for these intents.
+        if let Some((_, out)) = turn.observations.last() {
+            return Ok(Step::Answer(format!("Here's what I found:\n{out}")));
+        }
+        let q = turn.question.to_lowercase();
+        let numeric = ["altitude", "velocity", "heading"]
+            .into_iter()
+            .find(|f| q.contains(*f))
+            .unwrap_or("altitude");
+        let step = if q.contains("how many") || q.contains("count") {
+            Step::CallTool { name: "aggregate_flights".into(), args: json!({ "kind": "count" }) }
+        } else if q.contains("percentile") || q.contains("p50") || q.contains("p90") || q.contains("p99") {
+            Step::CallTool {
+                name: "aggregate_flights".into(),
+                args: json!({ "kind": "percentiles", "field": numeric, "percentiles": [50, 90, 99] }),
+            }
+        } else if q.contains("aircraft") || q.contains("by origin") || q.contains("origins") {
+            let field = if q.contains("aircraft") { "aircraft_type" } else { "origin" };
+            Step::CallTool {
+                name: "aggregate_flights".into(),
+                args: json!({ "kind": "value_counts", "field": field }),
+            }
+        } else if q.contains("cluster") || q.contains("shard") || q.contains("health") || q.contains("nodes") {
+            Step::CallTool { name: "cluster_state".into(), args: json!({}) }
+        } else {
+            Step::CallTool { name: "search_flights".into(), args: json!({ "query": turn.question }) }
+        };
+        Ok(step)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn first_tool(q: &str) -> (String, Value) {
+        match HeuristicModel.next_step(Turn { question: q, observations: &[] }).await.unwrap() {
+            Step::CallTool { name, args } => (name, args),
+            Step::Answer(_) => panic!("expected a tool call on the first turn"),
+        }
+    }
+
+    #[tokio::test]
+    async fn heuristic_routes_intents_to_the_right_tool() {
+        assert_eq!(first_tool("how many flights?").await.0, "aggregate_flights");
+        let (name, args) = first_tool("altitude percentiles").await;
+        assert_eq!(name, "aggregate_flights");
+        assert_eq!(args["kind"], "percentiles");
+        assert_eq!(args["field"], "altitude");
+        assert_eq!(first_tool("flights by aircraft").await.1["field"], "aircraft_type");
+        assert_eq!(first_tool("is the cluster healthy?").await.0, "cluster_state");
+        assert_eq!(first_tool("UAL231").await.0, "search_flights");
+    }
+
+    #[tokio::test]
+    async fn heuristic_answers_once_a_tool_has_reported() {
+        let obs = [("cluster_state".to_string(), "2 shard groups".to_string())];
+        let step = HeuristicModel.next_step(Turn { question: "x", observations: &obs }).await.unwrap();
+        assert!(matches!(step, Step::Answer(t) if t.contains("2 shard groups")));
+    }
+}
