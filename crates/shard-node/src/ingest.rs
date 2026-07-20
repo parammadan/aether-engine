@@ -62,6 +62,15 @@ pub enum Ownership {
 }
 
 impl Ownership {
+    /// The live vshard table when this node runs virtual-shard placement (so the search
+    /// path can name each hit's owning vshard); `None` under `hash % N` or single-node.
+    pub fn assignments(&self) -> Option<Arc<RwLock<Vec<u32>>>> {
+        match self {
+            Ownership::Mapped { assignments, .. } => Some(assignments.clone()),
+            _ => None,
+        }
+    }
+
     pub fn owns(&self, icao24: &str) -> bool {
         match self {
             Ownership::All => true,

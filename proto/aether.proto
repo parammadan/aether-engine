@@ -50,10 +50,52 @@ message SearchRequest {
   uint32 limit = 2;   // max hits to return from THIS shard. 0 = server default.
 }
 
+// Which index matched a hit — part of its provenance, so a mixed keyword+vector result
+// set says how each hit was found rather than leaving the caller to guess.
+enum IndexKind {
+  INDEX_UNSPECIFIED = 0;
+  INDEX_KEYWORD = 1;
+  INDEX_VECTOR = 2;
+}
+
+// Per-hit provenance: the auditable account of a single result, attached at the shard at
+// hit-construction time (never reconstructed later). Answers "who returned this, how
+// fresh is it, how was it matched, where does it live."
+message HitProvenance {
+  string source_group = 1;  // the shard group that produced this hit (e.g. "shard-0")
+  int64 observed_at = 2;    // when the document was observed (unix epoch millis) = freshness
+  IndexKind index = 3;      // keyword or vector match
+  double score = 4;         // the score, carried here too so a hit is self-describing
+  int32 owning_vshard = 5;  // virtual shard owning this doc, or -1 under hash%N / single-node
+}
+
 message SearchHit {
   FlightDocument document = 1;
   double score = 2;   // relevance score from the inverted index; lets the coordinator
                       // merge hits from many shards into one globally-ranked list.
+  HitProvenance provenance = 3;
+}
+
+// A shard the coordinator asked but did not merge, and why. `reason` is "timeout" (the
+// shard was too slow for the per-shard deadline) or "unreachable" (connect/RPC failed) —
+// the same distinction the deadline layer already logs.
+message OmittedShard {
+  string address = 1;
+  string reason = 2;
+}
+
+// Per-query provenance manifest: the coordinator's auditable account of the WHOLE query —
+// coverage, what was dropped and why, freshness envelope, timing, and which placement
+// version answered. A degraded result says exactly how it was degraded.
+message QueryManifest {
+  uint32 shards_queried = 1;
+  uint32 shards_answered = 2;
+  repeated OmittedShard omitted = 3;
+  uint32 deduped = 4;             // hits dropped as cross-shard duplicates during merge
+  int64 freshest_observed_at = 5; // newest observation among returned hits (0 if none)
+  int64 stalest_observed_at = 6;  // oldest observation among returned hits (0 if none)
+  uint64 elapsed_ms = 7;          // wall time from fan-out to merged response
+  uint64 placement_version = 8;   // vshard-table version that served this query
 }
 
 message SearchResponse {
@@ -68,6 +110,10 @@ message SearchResponse {
   // results are partial (some shard was unreachable) rather than empty.
   uint32 shards_queried = 4;
   uint32 shards_answered = 5;
+
+  // Per-query provenance, assembled by the coordinator on a merged response (absent on a
+  // single shard's direct reply).
+  QueryManifest manifest = 6;
 }
 
 // Vector (semantic) search. The caller embeds the query text ONCE and fans the resulting
@@ -193,6 +239,7 @@ message SearchUpdate {
   uint32 shards_answered = 3; // shards that have reported so far
   uint32 shards_queried = 4;  // total shards asked
   bool complete = 5;          // true on the final update (all shards reported or timed out)
+  QueryManifest manifest = 6; // assembled and emitted on the final (complete) update
 }
 
 // Served by the coordinator.

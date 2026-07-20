@@ -222,6 +222,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
+    // Grab the live vshard table (if any) for the search path's provenance BEFORE the
+    // ingestion branches move `ownership` into their spawned tasks.
+    let search_assignments = ownership.assignments();
+
     match &raft {
         // Consensus-managed: form the group, then the ELECTED leader ingests through the log.
         Some((raft, my_raft_id)) => {
@@ -288,7 +292,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => {}
     }
 
-    let search = ShardSearchService::new(index.clone(), shard_id_label.clone());
+    let mut search = ShardSearchService::new(index.clone(), shard_id_label.clone());
+    if let Some(assignments) = search_assignments {
+        search = search.with_assignments(assignments);
+    }
     let replication = ReplicationService::new(index);
     let mode = if raft_mode { "raft" } else { "legacy" };
     println!(

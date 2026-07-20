@@ -28,11 +28,49 @@ const DEFAULT_KNN: usize = 10;
 pub struct ShardSearchService {
     store: Arc<RwLock<ShardStore>>,
     shard_id: String,
+    /// Live virtual-shard table, when this node runs virtual-shard placement. Lets each
+    /// hit name the vshard that owns its document (`hash(icao24) % V`); absent under plain
+    /// `hash % N` or single-node, where the vshard concept doesn't apply.
+    assignments: Option<Arc<RwLock<Vec<u32>>>>,
 }
 
 impl ShardSearchService {
     pub fn new(store: Arc<RwLock<ShardStore>>, shard_id: String) -> Self {
-        Self { store, shard_id }
+        Self { store, shard_id, assignments: None }
+    }
+
+    /// Give the search path the live vshard table so hits can carry their owning vshard.
+    pub fn with_assignments(mut self, assignments: Arc<RwLock<Vec<u32>>>) -> Self {
+        self.assignments = Some(assignments);
+        self
+    }
+
+    /// The virtual shard owning `icao24` under the current table, or -1 when this node
+    /// isn't running virtual-shard placement.
+    fn owning_vshard(&self, icao24: &str) -> i32 {
+        match &self.assignments {
+            Some(a) => {
+                let v = a.read().map(|t| t.len()).unwrap_or(0);
+                if v == 0 {
+                    -1
+                } else {
+                    (common::shard::fnv1a_64(icao24.as_bytes()) % v as u64) as i32
+                }
+            }
+            None => -1,
+        }
+    }
+
+    /// Build a hit with its provenance block attached at construction.
+    fn hit(&self, doc: common::pb::FlightDocument, score: f64, index: common::pb::IndexKind) -> SearchHit {
+        let provenance = common::pb::HitProvenance {
+            source_group: self.shard_id.clone(),
+            observed_at: doc.observed_at,
+            index: index as i32,
+            score,
+            owning_vshard: self.owning_vshard(&doc.icao24),
+        };
+        SearchHit { document: Some(doc), score, provenance: Some(provenance) }
     }
 }
 
@@ -59,10 +97,7 @@ impl ShardSearch for ShardSearchService {
         let hits: Vec<SearchHit> = results
             .hits
             .iter()
-            .map(|hit| SearchHit {
-                document: Some(hit.doc.clone()),
-                score: hit.score,
-            })
+            .map(|hit| self.hit(hit.doc.clone(), hit.score, common::pb::IndexKind::IndexKeyword))
             .collect();
 
         Ok(Response::new(SearchResponse {
@@ -72,6 +107,7 @@ impl ShardSearch for ShardSearchService {
             // Coverage fields are a coordinator-level concept; a single shard leaves them 0.
             shards_queried: 0,
             shards_answered: 0,
+            manifest: None,
         }))
     }
 
@@ -101,10 +137,7 @@ impl ShardSearch for ShardSearchService {
         let hits: Vec<SearchHit> = store
             .vector_search(&req.vector, k)
             .iter()
-            .map(|hit| SearchHit {
-                document: Some(hit.doc.clone()),
-                score: hit.score,
-            })
+            .map(|hit| self.hit(hit.doc.clone(), hit.score, common::pb::IndexKind::IndexVector))
             .collect();
 
         // k-NN returns the k best neighbours; there is no cluster-wide "total matched"
@@ -117,6 +150,7 @@ impl ShardSearch for ShardSearchService {
             shard_id: self.shard_id.clone(),
             shards_queried: 0,
             shards_answered: 0,
+            manifest: None,
         }))
     }
 }
