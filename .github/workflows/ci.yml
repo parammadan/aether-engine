@@ -47,3 +47,8 @@ jobs:
       # addressed, tighten this to `-- -D warnings` so lints gate too.
       - name: Clippy (advisory)
         run: cargo clippy --workspace --all-targets --locked
+
+      # The dashboard's data-viz palette must stay colorblind-safe and contrast-valid —
+      # computed, not eyeballed. Fails the build if the categorical series colors regress.
+      - name: Validate dashboard palette
+        run: bash scripts/check-palette.sh
