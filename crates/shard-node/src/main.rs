@@ -65,11 +65,13 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 /// (`AETHER_SOURCE=synthetic`) for offline demos and tests. The synthetic seed is derived
 /// from the node id so two producers can never fabricate colliding aircraft.
 fn build_source(node_id: &str) -> Box<dyn FlightSource> {
-    if std::env::var("AETHER_SOURCE").as_deref() == Ok("synthetic") {
-        let seed = common::shard::fnv1a_64(node_id.as_bytes()) as u32;
-        Box::new(SyntheticSource::new(seed, 5))
-    } else {
-        Box::new(OpenSkySource::from_env())
+    let seed = common::shard::fnv1a_64(node_id.as_bytes()) as u32;
+    match std::env::var("AETHER_SOURCE").as_deref() {
+        Ok("synthetic") => Box::new(SyntheticSource::new(seed, 5)),
+        // SIEM generality proof: security events behind the SAME source trait, no new
+        // distributed machinery downstream.
+        Ok("security") => Box::new(shard_node::ingest::SecuritySource::new(seed, 5)),
+        _ => Box::new(OpenSkySource::from_env()),
     }
 }
 

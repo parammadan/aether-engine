@@ -176,6 +176,65 @@ impl FlightSource for SyntheticSource {
     }
 }
 
+/// A SECURITY-EVENT source — the SIEM generality proof. Security events have the same shape
+/// the engine already handles (a high-cardinality entity key, a relentless stream, hybrid
+/// queries over structured + text fields), so they map straight onto the existing document
+/// schema with ZERO new distributed machinery. The field mapping (documented so queries
+/// read sensibly):
+///   icao24        = unique EVENT id             — THE SHARD KEY (see the learning below)
+///   origin        = source IP (the entity)      — value-counts = noisiest source; pivot key
+///   destination   = target host
+///   aircraft_type = event category              — value-counts = detection breakdown
+///   callsign      = actor / user
+///   altitude      = severity 0..127             — histograms / percentiles / filters
+///   on_ground     = resolved flag
+///
+/// LEARNING (ADR-0046): the engine's key is an UPSERT key — right for aircraft, where one
+/// icao24 is one evolving entity re-observed over time. Security events are the opposite —
+/// immutable per-event records where one entity (a source IP) emits MANY events — so the
+/// document key must be the EVENT id (keying by entity would collapse the stream to one
+/// row per IP). The entity becomes a high-cardinality FIELD that aggregations pivot on, and
+/// correlation is a filtered value-counts. Still zero new distributed machinery.
+pub struct SecuritySource {
+    seed: u32,
+    batch_size: usize,
+    seq: std::sync::atomic::AtomicU32,
+}
+
+impl SecuritySource {
+    pub fn new(seed: u32, batch_size: usize) -> Self {
+        Self { seed, batch_size, seq: std::sync::atomic::AtomicU32::new(0) }
+    }
+}
+
+#[async_trait]
+impl FlightSource for SecuritySource {
+    async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
+        // A small pool of actors/targets so co-occurrence aggregations find real structure
+        // (a few noisy source IPs, a handful of event categories).
+        let categories = ["auth_fail", "port_scan", "malware", "exfil", "privilege_escalation"];
+        let actors = ["alice", "bob", "carol", "dave", "svc-account"];
+        let sources = ["10.0.0.5", "10.0.0.9", "192.168.1.20", "172.16.0.4"];
+        let mut docs = Vec::with_capacity(self.batch_size);
+        for _ in 0..self.batch_size {
+            let s = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let h = common::shard::fnv1a_64(&s.to_le_bytes());
+            let pick = |shift: u32, n: usize| ((h >> shift) % n as u64) as usize;
+            docs.push(FlightDocument {
+                icao24: format!("evt-{:04x}{:06x}", self.seed, s), // unique event id = shard/doc key
+                origin: sources[pick(4, sources.len())].to_string(), // source IP = the entity to pivot on
+                destination: format!("host-{}", pick(20, 8)),
+                aircraft_type: categories[pick(28, categories.len())].to_string(), // event category
+                callsign: actors[pick(12, actors.len())].to_string(),              // actor / user
+                altitude: (h >> 36 & 0x7f) as f64,                                 // severity 0..127
+                observed_at: s as i64,
+                ..Default::default()
+            });
+        }
+        Ok(docs)
+    }
+}
+
 /// Run the ingestion loop: poll `source` every `poll_interval`, inserting each snapshot into
 /// `index`, keeping only the documents this node owns per `ownership` (everything, a fixed
 /// `hash % N` slice, or a live virtual-shard mapping).
