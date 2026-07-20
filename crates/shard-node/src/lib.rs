@@ -7,6 +7,7 @@
 //! - [`cluster`]: registering this node with the coordinator control plane.
 //! - [`replication`]: leader → follower document replication.
 
+pub mod agg;
 pub mod cluster;
 pub mod index;
 pub mod ingest;

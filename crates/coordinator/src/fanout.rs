@@ -44,16 +44,16 @@ pub(crate) async fn query_leader(
         Ok(Some(resp)) => Ok(resp),
         Ok(None) => {
             eprintln!("fanout: shard omitted addr={addr} reason=unreachable");
-            Err(omitted(addr, "unreachable"))
+            Err(omitted_shard(addr, "unreachable"))
         }
         Err(_) => {
             eprintln!("fanout: shard omitted addr={addr} reason=timeout");
-            Err(omitted(addr, "timeout"))
+            Err(omitted_shard(addr, "timeout"))
         }
     }
 }
 
-fn omitted(address: String, reason: &str) -> common::pb::OmittedShard {
+pub(crate) fn omitted_shard(address: String, reason: &str) -> common::pb::OmittedShard {
     common::pb::OmittedShard { address, reason: reason.to_string() }
 }
 
@@ -283,11 +283,11 @@ pub async fn scatter_gather_vector(
                 Ok(Some(resp)) => Ok(resp),
                 Ok(None) => {
                     eprintln!("fanout: shard omitted addr={addr} reason=unreachable");
-                    Err(omitted(addr, "unreachable"))
+                    Err(omitted_shard(addr, "unreachable"))
                 }
                 Err(_) => {
                     eprintln!("fanout: shard omitted addr={addr} reason=timeout");
-                    Err(omitted(addr, "timeout"))
+                    Err(omitted_shard(addr, "timeout"))
                 }
             }
         });

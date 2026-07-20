@@ -111,6 +111,11 @@ impl InvertedIndex {
         self.docs.iter().flatten().cloned().collect()
     }
 
+    /// Borrow every live document (for a full-corpus aggregation pass, no cloning).
+    pub fn doc_refs(&self) -> Vec<&FlightDocument> {
+        self.docs.iter().flatten().collect()
+    }
+
     /// Per-term frequencies over the document's indexed text fields.
     fn term_freqs(doc: &FlightDocument) -> HashMap<String, u32> {
         let mut freqs: HashMap<String, u32> = HashMap::new();

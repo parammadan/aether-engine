@@ -98,6 +98,16 @@ impl ShardStore {
         self.keyword.search(query, limit)
     }
 
+    /// Documents matching `query` for aggregation: an empty query means the whole corpus,
+    /// otherwise every keyword match (no limit). Borrows, so a full pass doesn't clone.
+    pub fn matching(&self, query: &str) -> Vec<&FlightDocument> {
+        if query.trim().is_empty() {
+            self.keyword.doc_refs()
+        } else {
+            self.keyword.search(query, 0).hits.into_iter().map(|h| h.doc).collect()
+        }
+    }
+
     /// Vector search for an already-embedded query (see [`VectorIndex::search`]).
     pub fn vector_search(&self, query: &[f32], k: usize) -> Vec<VectorHit<'_>> {
         self.vector.search(query, k)

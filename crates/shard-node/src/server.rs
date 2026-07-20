@@ -16,7 +16,10 @@ use std::sync::{Arc, RwLock};
 use tonic::{Request, Response, Status};
 
 use common::pb::shard_search_server::ShardSearch;
-use common::pb::{SearchHit, SearchRequest, SearchResponse, VectorSearchRequest};
+use common::pb::{
+    AggregateRequest, AggregateResponse, SearchHit, SearchRequest, SearchResponse,
+    VectorSearchRequest,
+};
 
 use crate::store::ShardStore;
 
@@ -150,6 +153,25 @@ impl ShardSearch for ShardSearchService {
             shard_id: self.shard_id.clone(),
             shards_queried: 0,
             shards_answered: 0,
+            manifest: None,
+        }))
+    }
+
+    async fn aggregate(
+        &self,
+        request: Request<AggregateRequest>,
+    ) -> Result<Response<AggregateResponse>, Status> {
+        let req = request.into_inner();
+        let store = self
+            .store
+            .read()
+            .map_err(|_| Status::internal("store lock poisoned"))?;
+        // One pass over the matching documents; the coordinator merges partials.
+        let matched = store.matching(&req.query);
+        let partial = crate::agg::partial(&matched, &req);
+        Ok(Response::new(AggregateResponse {
+            partial: Some(partial),
+            percentiles: Vec::new(), // resolved by the coordinator after merge
             manifest: None,
         }))
     }

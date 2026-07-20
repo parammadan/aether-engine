@@ -208,6 +208,48 @@ impl Coordinator for CoordinatorService {
         )))
     }
 
+    async fn aggregate(
+        &self,
+        request: Request<common::pb::AggregateRequest>,
+    ) -> Result<Response<common::pb::AggregateResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Read)?;
+        let req = request.into_inner();
+        let kind = req.kind();
+        let requested = req.percentiles.clone();
+
+        let (leaders, placement_version) = {
+            let registry = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?;
+            (registry.leader_addresses(), registry.placement_version())
+        };
+        let shards_queried = leaders.len() as u32;
+
+        let started = std::time::Instant::now();
+        let (partials, omitted) = crate::agg::scatter_aggregate(leaders, req).await;
+        let shards_answered = partials.len() as u32;
+        let (merged, percentiles) = crate::agg::merge_partials(kind, partials, &requested);
+
+        // Aggregations carry the same coverage manifest as search: which shards contributed
+        // (partial coverage means the aggregate summarizes only the shards that answered).
+        let manifest = crate::fanout::build_manifest(
+            &[],
+            shards_queried,
+            shards_answered,
+            omitted,
+            0,
+            placement_version,
+            started.elapsed().as_millis() as u64,
+        );
+
+        Ok(Response::new(common::pb::AggregateResponse {
+            partial: Some(merged),
+            percentiles,
+            manifest: Some(manifest),
+        }))
+    }
+
     async fn drain_node(
         &self,
         request: Request<DrainRequest>,

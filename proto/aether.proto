@@ -338,6 +338,10 @@ service Coordinator {
   // rule (scores are cosine similarity on both paths).
   rpc VectorSearch(VectorSearchRequest) returns (SearchResponse);
 
+  // Aggregation scatter-gather: fan the aggregate to every shard leader, merge the
+  // partials, resolve percentiles, and report coverage in the manifest.
+  rpc Aggregate(AggregateRequest) returns (AggregateResponse);
+
   // Followers of a shard, so a leader can discover where to replicate.
   rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse);
 
