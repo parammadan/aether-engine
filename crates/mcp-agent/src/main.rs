@@ -72,6 +72,25 @@ fn tool_definitions() -> Value {
                             leaders and followers, liveness, and virtual-shard placement. \
                             Read-only telemetry.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "aggregate_flights",
+            "description": "Summarize flights across the whole cluster: counts, value-counts \
+                            (per origin/aircraft type/...), histograms (time or a numeric \
+                            field), geo-density grid, or percentiles of a numeric field. \
+                            Each shard computes a partial; the coordinator merges them and \
+                            reports coverage.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["count", "value_counts", "time_histogram", "numeric_histogram", "geo_grid", "percentiles"], "description": "which aggregation" },
+                    "query": { "type": "string", "description": "optional keyword filter (empty = all flights)" },
+                    "field": { "type": "string", "description": "field for value_counts (origin, aircraft_type, ...) or numeric_histogram/percentiles (altitude, velocity, ...)" },
+                    "interval": { "type": "number", "description": "bucket width: ms for time, units for numeric, degrees for geo_grid" },
+                    "percentiles": { "type": "array", "items": { "type": "number" }, "description": "for percentiles, e.g. [50, 95, 99]" }
+                },
+                "required": ["kind"]
+            }
         }
     ])
 }
@@ -151,8 +170,67 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
             }
             Ok(out)
         }
+        "aggregate_flights" => {
+            use common::pb::{AggKind, AggregateRequest};
+            let kind = match args.get("kind").and_then(|v| v.as_str()).unwrap_or("count") {
+                "count" => AggKind::AggCount,
+                "value_counts" => AggKind::AggValueCounts,
+                "time_histogram" => AggKind::AggTimeHistogram,
+                "numeric_histogram" => AggKind::AggNumericHistogram,
+                "geo_grid" => AggKind::AggGeoGrid,
+                "percentiles" => AggKind::AggPercentiles,
+                other => return Err(format!("unknown aggregation kind: {other}")),
+            };
+            let req = AggregateRequest {
+                query: args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                kind: kind as i32,
+                field: args.get("field").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                interval: args.get("interval").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                percentiles: args
+                    .get("percentiles")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                    .unwrap_or_default(),
+            };
+            let mut client = connect().await?;
+            let resp = client
+                .aggregate(common::net::with_token(req))
+                .await
+                .map_err(|e| e.to_string())?
+                .into_inner();
+            Ok(format_aggregate(kind, &resp))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
+}
+
+/// Render a merged aggregate for the agent: count, bucket table (biggest first), or
+/// resolved percentiles — plus the provenance line so the answer carries its coverage.
+fn format_aggregate(kind: common::pb::AggKind, resp: &common::pb::AggregateResponse) -> String {
+    use common::pb::AggKind;
+    let mut out = String::new();
+    if let Some(p) = &resp.partial {
+        match kind {
+            AggKind::AggCount => out.push_str(&format!("count: {}\n", p.count)),
+            AggKind::AggPercentiles => {
+                for pc in &resp.percentiles {
+                    out.push_str(&format!("p{}: {:.2}\n", pc.p, pc.value));
+                }
+            }
+            _ => {
+                let mut buckets: Vec<(&String, &u64)> = p.buckets.iter().collect();
+                buckets.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                for (k, v) in buckets.iter().take(25) {
+                    out.push_str(&format!("{k}: {v}\n"));
+                }
+                out.push_str(&format!("({} matched)\n", p.count));
+            }
+        }
+    }
+    if let Some(m) = &resp.manifest {
+        out.push_str(&format!("\nprovenance: {}\n", common::client::manifest_summary(m)));
+    }
+    out
 }
 
 // =============================================================================

@@ -152,6 +152,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
         let mut shard_count = 0;
         let mut vshard_group: Vec<u32> = Vec::new();
         let mut last_query = json!(null);
+        let mut by_origin = json!([]);
 
         if let Ok(mut client) = common::client::connect_first_healthy(&app.coordinator_addrs).await {
             // Cluster topology as the coordinator sees it.
@@ -218,6 +219,30 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                     last_query = json!({ "ok": false, "error": status.to_string() });
                 }
             }
+
+            // One live aggregate: counts by origin across the cluster. This is a VIEW over
+            // a real distributed aggregation (each shard's partial, merged) — the data layer
+            // the Y2 charts render, proven here as numbers.
+            if let Ok(resp) = client
+                .aggregate(common::net::with_token(common::pb::AggregateRequest {
+                    query: String::new(),
+                    kind: common::pb::AggKind::AggValueCounts as i32,
+                    field: "origin".to_string(),
+                    interval: 0.0,
+                    percentiles: vec![],
+                }))
+                .await
+            {
+                if let Some(p) = resp.into_inner().partial {
+                    let mut rows: Vec<(String, u64)> = p.buckets.into_iter().collect();
+                    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                    rows.truncate(8);
+                    by_origin = json!(rows
+                        .into_iter()
+                        .map(|(k, v)| json!({ "origin": k, "count": v }))
+                        .collect::<Vec<_>>());
+                }
+            }
         }
 
         let snapshot = json!({
@@ -230,6 +255,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 "err": app.query_err.load(Ordering::Relaxed),
                 "last": last_query,
             },
+            "aggregate": { "by_origin": by_origin },
             "events": app.events.lock().unwrap().clone(),
         });
         let _ = state_tx.send(snapshot.to_string());

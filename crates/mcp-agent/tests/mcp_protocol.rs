@@ -115,7 +115,10 @@ async fn agent_speaks_mcp_and_answers_with_real_cluster_data() {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["search_flights", "semantic_search_flights", "cluster_state"]);
+        assert_eq!(
+            names,
+            vec!["search_flights", "semantic_search_flights", "cluster_state", "aggregate_flights"]
+        );
 
         // keyword search finds the seeded document.
         send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
@@ -141,8 +144,17 @@ async fn agent_speaks_mcp_and_answers_with_real_cluster_data() {
         let text = state["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("shard 0") && text.contains("Leader"), "state: {text}");
 
-        // unknown tool -> tool-level error, not a protocol failure.
+        // aggregate: value-counts by origin, merged across shards, with provenance.
         send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call",
+                    "params":{"name":"aggregate_flights",
+                              "arguments":{"kind":"value_counts","field":"origin"}}}));
+        let agg = recv();
+        let text = agg["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(agg["result"]["isError"], false);
+        assert!(text.contains("matched") && text.contains("provenance"), "aggregate answer: {text}");
+
+        // unknown tool -> tool-level error, not a protocol failure.
+        send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
                     "params":{"name":"reassign_vshard","arguments":{}}}));
         let refused = recv();
         assert_eq!(refused["result"]["isError"], true, "mutating-sounding tools must not exist");
