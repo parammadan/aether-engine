@@ -62,6 +62,113 @@ struct Judgment {
     relevant: &'static [&'static str],
 }
 
+/// Cheap, query-intrinsic + index-derived features an adaptive router could use.
+struct QueryFeatures {
+    /// Number of query tokens.
+    len: usize,
+    /// Fraction of query tokens that exist in the index at all (1.0 = no OOV).
+    in_vocab_ratio: f64,
+    /// The rarest matching token's document frequency (small = a rare term present).
+    min_df: usize,
+}
+
+/// A deliberately simple, DEFENSIBLE adaptive router: if the query is a short lookup whose
+/// rarest token is very rare (a distinctive term like a callsign or "concorde"), trust
+/// keyword (BM25's IDF nails rare exact terms); otherwise fall back to RRF. The point is to
+/// MEASURE whether cheap features can beat RRF — not to assume they can.
+#[derive(Debug, PartialEq)]
+enum Strategy {
+    Keyword,
+    Rrf,
+}
+
+fn route(f: &QueryFeatures) -> Strategy {
+    if f.len <= 2 && f.in_vocab_ratio >= 0.5 && f.min_df <= 2 {
+        Strategy::Keyword
+    } else {
+        Strategy::Rrf
+    }
+}
+
+#[test]
+fn adaptive_routing_is_measured_against_rrf_and_only_ships_if_it_wins() {
+    // Rebuild the same corpus as the main test (kept local so the two tests are independent).
+    let mut store = ShardStore::new();
+    for i in 0..8 {
+        store.insert(doc(&format!("boe{i}"), &format!("BO{i}"), "United States", "JFK", "Boeing 737"));
+    }
+    for i in 0..6 {
+        store.insert(doc(&format!("air{i}"), &format!("AI{i}"), "France", "CDG", "Airbus A320"));
+    }
+    store.insert(doc("con0", "CC0", "France", "JFK", "Concorde supersonic"));
+    store.insert(doc("con1", "CC1", "United Kingdom", "JFK", "Concorde supersonic"));
+    store.insert(doc("trap", "TR0", "United States", "zzqx", "Boeing 787"));
+
+    let judgments = [
+        ("boeing concorde", vec!["con0", "con1"]),
+        ("airbus zzqx", vec!["air0", "air1", "air2", "air3", "air4", "air5"]),
+        ("CC0", vec!["con0"]),
+    ];
+
+    // Document frequency per token, for the router's features (computed from the store —
+    // in production the shards would report term stats; here we have the store directly).
+    let all_docs = store.matching("");
+    let df = |token: &str| -> usize {
+        let t = token.to_lowercase();
+        all_docs
+            .iter()
+            .filter(|d| {
+                [&d.callsign, &d.origin, &d.destination, &d.aircraft_type]
+                    .iter()
+                    .any(|f| f.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w == t))
+            })
+            .count()
+    };
+
+    let k = 10;
+    let (mut rrf_sum, mut adaptive_sum) = (0.0, 0.0);
+    println!("\n{:<20} {:>8} {:>10} {:>10}", "query", "rrf", "adaptive", "strategy");
+    for (query, rel) in &judgments {
+        let relevant: HashSet<String> = rel.iter().map(|s| s.to_string()).collect();
+        let tokens: Vec<&str> = query.split_whitespace().collect();
+        let features = QueryFeatures {
+            len: tokens.len(),
+            in_vocab_ratio: tokens.iter().filter(|t| df(t) > 0).count() as f64 / tokens.len() as f64,
+            min_df: tokens.iter().map(|t| df(t)).filter(|&d| d > 0).min().unwrap_or(0),
+        };
+        let strategy = route(&features);
+
+        let kw: Vec<SearchHit> =
+            store.search(query, 20).hits.iter().map(|h| as_hit(&h.doc.icao24)).collect();
+        let vq = HashEmbedder.embed(query);
+        let vec: Vec<SearchHit> =
+            store.vector_search(&vq, 20).iter().map(|h| as_hit(&h.doc.icao24)).collect();
+        let rrf = rrf_fuse(kw.clone(), vec, 20);
+        let rrf_n = ndcg_at_k(&ids(&rrf), &relevant, k);
+
+        let adaptive = match strategy {
+            Strategy::Keyword => kw,
+            Strategy::Rrf => rrf.clone(),
+        };
+        let adaptive_n = ndcg_at_k(&ids(&adaptive), &relevant, k);
+        rrf_sum += rrf_n;
+        adaptive_sum += adaptive_n;
+        println!("{query:<20} {rrf_n:>8.3} {adaptive_n:>10.3} {strategy:>10?}");
+    }
+    let n = judgments.len() as f64;
+    let (rrf_avg, adaptive_avg) = (rrf_sum / n, adaptive_sum / n);
+    println!("{:<20} {rrf_avg:>8.3} {adaptive_avg:>10.3}", "MEAN NDCG@10");
+
+    // THE GATE: adaptive routing ships ONLY if it beats plain RRF. On the lexical hash
+    // embedder it does NOT — cheap features can't tell a rare RELEVANCE signal ("concorde")
+    // from a rare DISTRACTOR ("zzqx"), so the router mis-routes the trap query and loses.
+    // Verdict recorded in ADR-0042: RRF stands, adaptive routing rejected WITH numbers.
+    assert!(
+        adaptive_avg <= rrf_avg + 1e-9,
+        "adaptive BEAT rrf ({adaptive_avg:.3} > {rrf_avg:.3}) — revisit: it may be worth shipping"
+    );
+}
+
 #[test]
 fn rrf_hybrid_is_at_least_as_good_as_the_better_single_ranker() {
     // A corpus with CONTROLLED token frequencies, so the two rankers genuinely diverge:
