@@ -145,14 +145,30 @@ impl SyntheticSource {
 #[async_trait]
 impl FlightSource for SyntheticSource {
     async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
+        // Deterministic-but-varied geo/numeric spread so the aggregation-backed panels
+        // (geo-density map, altitude/velocity histograms, percentiles) show a real
+        // distribution rather than everything piled at (0,0). Derived from the sequence
+        // number via a cheap hash, so a run is reproducible.
+        // Origin stays the constant "Synthetica" token (everything downstream searches for
+        // it), but aircraft type and the geo/numeric fields get a deterministic spread so
+        // the aggregation-backed panels show a real distribution instead of a pile at
+        // (0,0). Derived from the sequence number via a cheap hash, so a run is reproducible.
+        let crafts = ["TestJet", "MockLiner", "StubProp", "FixtureWing"];
         let mut docs = Vec::with_capacity(self.batch_size);
         for _ in 0..self.batch_size {
             let s = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let h = common::shard::fnv1a_64(&s.to_le_bytes());
+            let f = |shift: u32, span: f64, base: f64| ((h >> shift) % 1000) as f64 / 1000.0 * span + base;
             docs.push(FlightDocument {
                 icao24: format!("{:04x}{:06x}", self.seed, s),
                 callsign: format!("SYN{s}"),
                 origin: "Synthetica".to_string(),
-                aircraft_type: "TestJet".to_string(),
+                aircraft_type: crafts[((h >> 8) % crafts.len() as u64) as usize].to_string(),
+                latitude: f(16, 140.0, -60.0),   // -60..80
+                longitude: f(26, 360.0, -180.0), // -180..180
+                altitude: f(36, 12000.0, 0.0),   // 0..12000 m
+                velocity: f(44, 300.0, 0.0),     // 0..300 m/s
+                observed_at: s as i64,
                 ..Default::default()
             });
         }

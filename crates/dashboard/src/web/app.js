@@ -47,9 +47,42 @@ function render(snap) {
     $("placement").textContent = `placement v${prov.placement_version}`;
   }
 
-  renderByOrigin(snap.aggregate && snap.aggregate.by_origin);
+  const agg = snap.aggregate || {};
+  renderByOrigin(agg.by_origin);
+  renderGeo(agg.geo_cells || []);
   renderNodes(snap.nodes || []);
   renderEvents(snap.events || []);
+}
+
+// Geo-density: each aggregate cell is a 10° grid square, shaded on a single-hue sequential
+// ramp (light→dark = low→high count), per the dataviz rule for magnitude. lat/lon are the
+// cell's lower-left corner; project equirectangularly into the 720×300 viewBox.
+const GEO_W = 720, GEO_H = 300, CELL = 10;
+function renderGeo(cells) {
+  const svg = $("geomap");
+  const proj = (lat, lon) => [((lon + 180) / 360) * GEO_W, ((90 - lat) / 180) * GEO_H];
+  const cw = (CELL / 360) * GEO_W, ch = (CELL / 180) * GEO_H;
+  const max = Math.max(1, ...cells.map((c) => c.count));
+  // Sequential blue ramp (validated steps), light at low magnitude → dark at high.
+  const ramp = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"];
+  const shade = (n) => ramp[Math.min(ramp.length - 1, Math.floor((n / max) * ramp.length))];
+
+  let rects = "";
+  for (const c of cells) {
+    const [x, y] = proj(c.lat + CELL, c.lon); // top-left of the cell
+    rects += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}" `
+      + `fill="${shade(c.count)}" stroke="var(--surface-1)" stroke-width="0.5"><title>${c.count} at ${c.lat},${c.lon}</title></rect>`;
+  }
+  // Equator + prime meridian guides so the projection reads as a map.
+  const [, eqY] = proj(0, 0);
+  const [pmX] = proj(0, 0);
+  svg.innerHTML =
+    `<line x1="0" y1="${eqY}" x2="${GEO_W}" y2="${eqY}" stroke="var(--border)" stroke-width="0.5"/>` +
+    `<line x1="${pmX}" y1="0" x2="${pmX}" y2="${GEO_H}" stroke="var(--border)" stroke-width="0.5"/>` +
+    rects;
+  $("geo-note").textContent = cells.length
+    ? `${cells.length} populated cells · darkest = ${max} flights`
+    : "no geo data yet";
 }
 
 // Node health tiles grouped by shard. Status is color + LABEL, never color alone.

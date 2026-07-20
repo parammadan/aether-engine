@@ -133,6 +133,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Once a second: fetch the coordinator's cluster view, run one query through it, detect
 /// promotions by diffing roles, and publish the combined snapshot for the UI.
+type Coord = common::pb::coordinator_client::CoordinatorClient<tonic::transport::Channel>;
+
+/// Run one aggregate through the coordinator; return (buckets, resolved percentiles).
+async fn run_agg(
+    client: &mut Coord,
+    kind: common::pb::AggKind,
+    field: &str,
+    interval: f64,
+    percentiles: &[f64],
+) -> Option<(std::collections::HashMap<String, u64>, Vec<common::pb::Percentile>)> {
+    let resp = client
+        .aggregate(common::net::with_token(common::pb::AggregateRequest {
+            query: String::new(),
+            kind: kind as i32,
+            field: field.to_string(),
+            interval,
+            percentiles: percentiles.to_vec(),
+            filter: None,
+        }))
+        .await
+        .ok()?
+        .into_inner();
+    resp.partial.map(|p| (p.buckets, resp.percentiles))
+}
+
+/// Turn a bucket map into sorted `{<key_name>, count}` rows (biggest first, top `n`).
+fn bucket_rows(buckets: std::collections::HashMap<String, u64>, key_name: &str, n: usize) -> serde_json::Value {
+    let mut rows: Vec<(String, u64)> = buckets.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    rows.truncate(n);
+    json!(rows.into_iter().map(|(k, v)| json!({ key_name: k, "count": v })).collect::<Vec<_>>())
+}
+
 async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
     // The live query's term must match what the configured source actually produces:
     // OpenSky documents carry origin countries ("United States"...); synthetic ones all
@@ -155,6 +188,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
         let mut vshard_group: Vec<u32> = Vec::new();
         let mut last_query = json!(null);
         let mut by_origin = json!([]);
+        let mut geo_cells = json!([]);
 
         if let Ok(mut client) = common::client::connect_first_healthy(&app.coordinator_addrs).await {
             // Cluster topology as the coordinator sees it.
@@ -222,30 +256,28 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 }
             }
 
-            // One live aggregate: counts by origin across the cluster. This is a VIEW over
-            // a real distributed aggregation (each shard's partial, merged) — the data layer
-            // the Y2 charts render, proven here as numbers.
-            if let Ok(resp) = client
-                .aggregate(common::net::with_token(common::pb::AggregateRequest {
-                    query: String::new(),
-                    kind: common::pb::AggKind::AggValueCounts as i32,
-                    field: "origin".to_string(),
-                    interval: 0.0,
-                    percentiles: vec![],
-                    filter: None,
-                }))
+            // Live aggregates: every panel below is a VIEW over a real distributed
+            // aggregation (each shard's partial, merged at the coordinator) — the data
+            // layer the charts render, proven here as numbers.
+            by_origin = run_agg(&mut client, common::pb::AggKind::AggValueCounts, "origin", 0.0, &[])
                 .await
-            {
-                if let Some(p) = resp.into_inner().partial {
-                    let mut rows: Vec<(String, u64)> = p.buckets.into_iter().collect();
-                    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                    rows.truncate(8);
-                    by_origin = json!(rows
+                .map(|(buckets, _)| bucket_rows(buckets, "origin", 8))
+                .unwrap_or_else(|| json!([]));
+
+            // Geo-density grid (10° cells): the map panel's source.
+            geo_cells = run_agg(&mut client, common::pb::AggKind::AggGeoGrid, "", 10.0, &[])
+                .await
+                .map(|(buckets, _)| {
+                    buckets
                         .into_iter()
-                        .map(|(k, v)| json!({ "origin": k, "count": v }))
-                        .collect::<Vec<_>>());
-                }
-            }
+                        .filter_map(|(cell, count)| {
+                            let (lat, lon) = cell.split_once(',')?;
+                            Some(json!({ "lat": lat.parse::<f64>().ok()?, "lon": lon.parse::<f64>().ok()?, "count": count }))
+                        })
+                        .collect::<Vec<_>>()
+                        .into()
+                })
+                .unwrap_or_else(|| json!([]));
         }
 
         // The WebSocket snapshot contract (v1): every panel is a pure render of a slice of
@@ -261,7 +293,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 "err": app.query_err.load(Ordering::Relaxed),
                 "last": last_query,
             },
-            "aggregate": { "by_origin": by_origin },
+            "aggregate": { "by_origin": by_origin, "geo_cells": geo_cells },
             "events": app.events.lock().unwrap().clone(),
         });
         let _ = state_tx.send(snapshot.to_string());
