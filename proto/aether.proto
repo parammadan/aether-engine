@@ -45,9 +45,36 @@ message FlightDocument {
 // Keeping one Search contract for both means the coordinator is just another caller —
 // no separate "internal" search API to maintain.
 
+// A structured filter, evaluated AT THE SHARD before scoring/aggregation — pushdown is
+// the economics of distributed querying (ship 12 docs, not 10,000). All conditions must
+// hold (AND); OR stays out of scope until something concrete needs it. An unknown field
+// or a type-mismatched test is an InvalidArgument, never a silent no-op filter.
+message NumericRange {
+  optional double min = 1; // inclusive lower bound (absent = unbounded below)
+  optional double max = 2; // inclusive upper bound (absent = unbounded above)
+}
+
+message FilterCondition {
+  // Text fields (equals, case-insensitive): callsign, origin, destination, aircraft_type,
+  // tenant_id, icao24. Numeric fields (range): altitude, velocity, heading, vertical_rate,
+  // latitude, longitude, observed_at (epoch ms — the time-window filter). Boolean (is):
+  // on_ground.
+  string field = 1;
+  oneof test {
+    string equals = 2;
+    NumericRange range = 3;
+    bool is = 4;
+  }
+}
+
+message Filter {
+  repeated FilterCondition conditions = 1; // AND of all conditions; empty = no filtering
+}
+
 message SearchRequest {
   string query = 1;   // keyword query over the text fields (callsign, origin, ...).
   uint32 limit = 2;   // max hits to return from THIS shard. 0 = server default.
+  Filter filter = 3;  // optional structured filter, applied at the shard before ranking.
 }
 
 // Which index matched a hit — part of its provenance, so a mixed keyword+vector result
@@ -121,6 +148,7 @@ message SearchResponse {
 message VectorSearchRequest {
   repeated float vector = 1; // the embedded query, L2-normalized
   uint32 limit = 2;          // max hits from THIS shard. 0 = server default.
+  Filter filter = 3;         // optional structured filter, applied at the shard.
 }
 
 // =============================================================================
@@ -147,6 +175,7 @@ message AggregateRequest {
   string field = 3;              // the field to aggregate (value-counts / numeric / percentiles)
   double interval = 4;           // time bucket ms | numeric bucket width | geo cell degrees
   repeated double percentiles = 5; // requested percentiles (e.g. 50, 95, 99) for AGG_PERCENTILES
+  Filter filter = 6;             // optional structured filter, applied before aggregating
 }
 
 // A mergeable t-digest: parallel arrays of centroid means and weights. Merging two digests
