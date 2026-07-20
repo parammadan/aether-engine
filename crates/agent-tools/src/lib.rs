@@ -50,6 +50,21 @@ pub fn definitions() -> Value {
             }
         },
         {
+            "name": "hybrid_search_flights",
+            "description": "Hybrid search: runs BOTH keyword and semantic search and fuses \
+                            the rankings (Reciprocal Rank Fusion). Best when a query mixes an \
+                            exact term with a fuzzy intent. Each hit's provenance says which \
+                            index found it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "keywords and/or free-text intent" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "max results (default 5)" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
             "name": "cluster_state",
             "description": "Current cluster topology as the coordinator sees it: shards, \
                             leaders and followers, liveness, and virtual-shard placement. \
@@ -87,8 +102,14 @@ fn format_hits(resp: &common::pb::SearchResponse) -> String {
     for hit in &resp.hits {
         let d = hit.document.clone().unwrap_or_default();
         let via = hit.provenance.as_ref().map(|p| p.source_group.as_str()).unwrap_or("?");
+        // Which index matched it — trivial for single-mode search, load-bearing for hybrid.
+        let how = match hit.provenance.as_ref().map(|p| p.index()) {
+            Some(common::pb::IndexKind::IndexKeyword) => " keyword",
+            Some(common::pb::IndexKind::IndexVector) => " vector",
+            _ => "",
+        };
         out.push_str(&format!(
-            "- {} {} ({} -> {}) {} score={:.3} [via {via}]\n",
+            "- {} {} ({} -> {}) {} score={:.3} [via {via}{how}]\n",
             d.icao24, d.callsign, d.origin, d.destination, d.aircraft_type, hit.score
         ));
     }
@@ -157,6 +178,23 @@ pub async fn call(name: &str, args: &Value) -> Result<String, String> {
             let mut client = connect().await?;
             let resp = client
                 .vector_search(common::net::with_token(VectorSearchRequest { vector, limit, filter: None }))
+                .await
+                .map_err(|e| e.to_string())?
+                .into_inner();
+            Ok(format_hits(&resp))
+        }
+        "hybrid_search_flights" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or("missing required argument: query")?;
+            let mut client = connect().await?;
+            let resp = client
+                .hybrid_search(common::net::with_token(SearchRequest {
+                    query: query.to_string(),
+                    limit,
+                    filter: parse_filters(args)?,
+                }))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();

@@ -117,7 +117,13 @@ async fn agent_speaks_mcp_and_answers_with_real_cluster_data() {
             .collect();
         assert_eq!(
             names,
-            vec!["search_flights", "semantic_search_flights", "cluster_state", "aggregate_flights"]
+            vec![
+                "search_flights",
+                "semantic_search_flights",
+                "hybrid_search_flights",
+                "cluster_state",
+                "aggregate_flights"
+            ]
         );
 
         // keyword search finds the seeded document.
@@ -143,6 +149,14 @@ async fn agent_speaks_mcp_and_answers_with_real_cluster_data() {
         let state = recv();
         let text = state["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("shard 0") && text.contains("Leader"), "state: {text}");
+
+        // hybrid: keyword + vector fused by RRF, hits tagged with the index that found them.
+        send(json!({"jsonrpc":"2.0","id":10,"method":"tools/call",
+                    "params":{"name":"hybrid_search_flights","arguments":{"query":"ual231"}}}));
+        let hyb = recv();
+        let text = hyb["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(hyb["result"]["isError"], false);
+        assert!(text.contains("provenance"), "hybrid answer carries provenance: {text}");
 
         // aggregate: value-counts by origin, merged across shards, with provenance.
         send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call",
