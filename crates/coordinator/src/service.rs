@@ -96,19 +96,26 @@ impl Coordinator for CoordinatorService {
 
         // Snapshot the leader addresses and release the lock BEFORE any await — we must not
         // hold the std RwLock guard across the network fan-out.
-        let leaders = {
+        let (leaders, placement_version) = {
             let registry = self
                 .registry
                 .read()
                 .map_err(|_| Status::internal("registry lock poisoned"))?;
-            registry.leader_addresses()
+            (registry.leader_addresses(), registry.placement_version())
         };
         let shards_queried = leaders.len() as u32;
 
         // Fan out concurrently, then merge. Missing shards produce partial (not failed)
-        // results — coverage is reported in the response.
-        let responses = scatter_gather(leaders, req).await;
-        let merged = merge_search_responses(responses, limit, shards_queried);
+        // results — coverage and the omission reasons are reported in the manifest.
+        let started = std::time::Instant::now();
+        let fanout = scatter_gather(leaders, req).await;
+        let merged = merge_search_responses(
+            fanout,
+            limit,
+            shards_queried,
+            placement_version,
+            started.elapsed().as_millis() as u64,
+        );
 
         Ok(Response::new(merged))
     }
@@ -182,16 +189,23 @@ impl Coordinator for CoordinatorService {
         self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
         let limit = req.limit as usize;
-        let leaders = {
+        let (leaders, placement_version) = {
             let registry = self
                 .registry
                 .read()
                 .map_err(|_| Status::internal("registry lock poisoned"))?;
-            registry.leader_addresses()
+            (registry.leader_addresses(), registry.placement_version())
         };
         let shards_queried = leaders.len() as u32;
-        let responses = scatter_gather_vector(leaders, req).await;
-        Ok(Response::new(merge_search_responses(responses, limit, shards_queried)))
+        let started = std::time::Instant::now();
+        let fanout = scatter_gather_vector(leaders, req).await;
+        Ok(Response::new(merge_search_responses(
+            fanout,
+            limit,
+            shards_queried,
+            placement_version,
+            started.elapsed().as_millis() as u64,
+        )))
     }
 
     async fn drain_node(
@@ -364,18 +378,18 @@ impl Coordinator for CoordinatorService {
         let limit = req.limit as usize;
 
         // Snapshot leaders and release the lock before any await.
-        let leaders = {
+        let (leaders, placement_version) = {
             let registry = self
                 .registry
                 .read()
                 .map_err(|_| Status::internal("registry lock poisoned"))?;
-            registry.leader_addresses()
+            (registry.leader_addresses(), registry.placement_version())
         };
         let shards_queried = leaders.len() as u32;
 
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
-            let mut merge = ProgressiveMerge::new(shards_queried, limit);
+            let mut merge = ProgressiveMerge::new(shards_queried, limit, placement_version);
 
             // Query every leader concurrently under the fan-out deadline; fold + emit an
             // update as each one reports. A slow shard times out like a dead one, so the
@@ -386,12 +400,16 @@ impl Coordinator for CoordinatorService {
             }
 
             while let Some(joined) = set.join_next().await {
-                if let Ok(Some(resp)) = joined {
-                    merge.add(resp);
-                    // Client hung up — stop streaming.
-                    if tx.send(Ok(merge.snapshot(false))).await.is_err() {
-                        return;
+                match joined {
+                    Ok(Ok(resp)) => {
+                        merge.add(resp);
+                        // Client hung up — stop streaming.
+                        if tx.send(Ok(merge.snapshot(false))).await.is_err() {
+                            return;
+                        }
                     }
+                    Ok(Err(o)) => merge.omit(o), // omitted shard: recorded for the final manifest
+                    Err(_) => {}                 // task panic — treat as absent
                 }
             }
 

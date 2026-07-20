@@ -72,6 +72,10 @@ pub struct Registry {
     /// cluster runs plain `hash % N` placement. V is fixed at construction, forever; load
     /// moves by reassigning entries, never by changing the modulus.
     vshards: Vec<u32>,
+    /// Monotonic version of the placement table: bumped on every reassignment (and on a
+    /// snapshot restore that changes it). Stamped into query manifests so a result can say
+    /// which placement served it — the auditable answer to "was this routed by a stale map?"
+    placement_version: u64,
     /// True when the authoritative state (vshard table + drain set) is replicated across a
     /// coordinator group. Local view-driven code must then never mutate it: every replica's
     /// copy is owned by consensus, and a local edit is a divergence.
@@ -88,6 +92,7 @@ impl Registry {
             followers: HashMap::new(),
             draining: std::collections::HashSet::new(),
             vshards: Vec::new(),
+            placement_version: 0,
             authority_replicated: false,
         }
     }
@@ -123,7 +128,13 @@ impl Registry {
             return Err(format!("group {group} out of range (N={})", self.shard_count));
         }
         self.vshards[vshard as usize] = group;
+        self.placement_version += 1;
         Ok(())
+    }
+
+    /// The current placement-table version (0 before any reassignment).
+    pub fn placement_version(&self) -> u64 {
+        self.placement_version
     }
 
     /// Check a reassignment WITHOUT applying it — the validation half of
@@ -174,6 +185,8 @@ impl Registry {
     pub fn set_authority(&mut self, vshards: Vec<u32>, draining: Vec<String>) {
         self.vshards = vshards;
         self.draining = draining.into_iter().collect();
+        // A restored table is a new placement generation from a manifest's perspective.
+        self.placement_version += 1;
     }
 
     pub fn shard_count(&self) -> u32 {

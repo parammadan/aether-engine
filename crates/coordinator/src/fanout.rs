@@ -31,23 +31,38 @@ pub fn shard_timeout() -> Duration {
 /// the same partial-coverage result (`None`), but the log line distinguishes them —
 /// `reason=timeout` (up, but slow) vs `reason=unreachable` (down or erroring) — because
 /// an operator debugging coverage drops needs to know which problem they have.
-pub(crate) async fn query_leader(addr: String, req: SearchRequest) -> Option<SearchResponse> {
+pub(crate) async fn query_leader(
+    addr: String,
+    req: SearchRequest,
+) -> Result<SearchResponse, common::pb::OmittedShard> {
     let attempt = tokio::time::timeout(shard_timeout(), async {
         let mut client = common::net::channel(&addr).await.ok().map(ShardSearchClient::new)?;
         client.search(req).await.ok().map(|r| r.into_inner())
     })
     .await;
     match attempt {
-        Ok(Some(resp)) => Some(resp),
+        Ok(Some(resp)) => Ok(resp),
         Ok(None) => {
             eprintln!("fanout: shard omitted addr={addr} reason=unreachable");
-            None
+            Err(omitted(addr, "unreachable"))
         }
         Err(_) => {
             eprintln!("fanout: shard omitted addr={addr} reason=timeout");
-            None
+            Err(omitted(addr, "timeout"))
         }
     }
+}
+
+fn omitted(address: String, reason: &str) -> common::pb::OmittedShard {
+    common::pb::OmittedShard { address, reason: reason.to_string() }
+}
+
+/// The outcome of a fan-out: the shards that answered, and the ones that didn't (with why).
+/// Carrying the omissions — not just a count — is what lets the query manifest say exactly
+/// which shard was dropped and whether it timed out or was unreachable.
+pub struct Fanout {
+    pub responses: Vec<SearchResponse>,
+    pub omitted: Vec<common::pb::OmittedShard>,
 }
 
 /// Global ranking of hits: score descending, ties broken by `icao24` for a stable order.
@@ -67,10 +82,13 @@ fn cmp_hits(a: &SearchHit, b: &SearchHit) -> Ordering {
 /// - Coverage: `shards_queried` is how many leaders we asked; `shards_answered` is how many
 ///   of these responses we got. `answered < queried` ⇒ partial results (a shard was down).
 pub fn merge_search_responses(
-    responses: Vec<SearchResponse>,
+    fanout: Fanout,
     limit: usize,
     shards_queried: u32,
+    placement_version: u64,
+    elapsed_ms: u64,
 ) -> SearchResponse {
+    let Fanout { responses, omitted } = fanout;
     let shards_answered = responses.len() as u32;
 
     let mut hits = Vec::new();
@@ -80,12 +98,24 @@ pub fn merge_search_responses(
         hits.append(&mut resp.hits);
     }
 
+    let before_dedup = hits.len();
     let mut hits = dedup_by_aircraft(hits);
+    let deduped = (before_dedup - hits.len()) as u32;
     hits.sort_by(cmp_hits);
 
     if limit != 0 && hits.len() > limit {
         hits.truncate(limit);
     }
+
+    let manifest = build_manifest(
+        &hits,
+        shards_queried,
+        shards_answered,
+        omitted,
+        deduped,
+        placement_version,
+        elapsed_ms,
+    );
 
     SearchResponse {
         hits,
@@ -93,6 +123,35 @@ pub fn merge_search_responses(
         shard_id: "coordinator".to_string(),
         shards_queried,
         shards_answered,
+        manifest: Some(manifest),
+    }
+}
+
+/// Assemble the per-query provenance manifest. The freshness envelope is computed over the
+/// hits actually returned (post-truncation), so it describes the result the caller holds.
+pub(crate) fn build_manifest(
+    hits: &[SearchHit],
+    shards_queried: u32,
+    shards_answered: u32,
+    omitted: Vec<common::pb::OmittedShard>,
+    deduped: u32,
+    placement_version: u64,
+    elapsed_ms: u64,
+) -> common::pb::QueryManifest {
+    let observed: Vec<i64> = hits
+        .iter()
+        .filter_map(|h| h.provenance.as_ref().map(|p| p.observed_at))
+        .filter(|&t| t > 0)
+        .collect();
+    common::pb::QueryManifest {
+        shards_queried,
+        shards_answered,
+        omitted,
+        deduped,
+        freshest_observed_at: observed.iter().copied().max().unwrap_or(0),
+        stalest_observed_at: observed.iter().copied().min().unwrap_or(0),
+        elapsed_ms,
+        placement_version,
     }
 }
 
@@ -137,17 +196,30 @@ pub struct ProgressiveMerge {
     total_matched: u64,
     shards_answered: u32,
     shards_queried: u32,
+    omitted: Vec<common::pb::OmittedShard>,
+    deduped: u32,
+    placement_version: u64,
+    started: std::time::Instant,
 }
 
 impl ProgressiveMerge {
-    pub fn new(shards_queried: u32, limit: usize) -> Self {
+    pub fn new(shards_queried: u32, limit: usize, placement_version: u64) -> Self {
         Self {
             limit,
             hits: Vec::new(),
             total_matched: 0,
             shards_answered: 0,
             shards_queried,
+            omitted: Vec::new(),
+            deduped: 0,
+            placement_version,
+            started: std::time::Instant::now(),
         }
+    }
+
+    /// Record a shard that did not answer (with why), for the final manifest.
+    pub fn omit(&mut self, omitted: common::pb::OmittedShard) {
+        self.omitted.push(omitted);
     }
 
     /// Fold one shard's response into the running result.
@@ -155,21 +227,37 @@ impl ProgressiveMerge {
         self.shards_answered += 1;
         self.total_matched += resp.total_matched;
         self.hits.extend(resp.hits);
+        let before = self.hits.len();
         self.hits = dedup_by_aircraft(std::mem::take(&mut self.hits));
+        self.deduped += (before - self.hits.len()) as u32;
         self.hits.sort_by(cmp_hits);
         if self.limit != 0 && self.hits.len() > self.limit {
             self.hits.truncate(self.limit);
         }
     }
 
-    /// The current progressive result. `complete` marks the final update.
+    /// The current progressive result. `complete` marks the final update — and only then
+    /// is the manifest attached, since coverage/dedup/omissions aren't final until every
+    /// shard has reported or timed out.
     pub fn snapshot(&self, complete: bool) -> SearchUpdate {
+        let manifest = complete.then(|| {
+            build_manifest(
+                &self.hits,
+                self.shards_queried,
+                self.shards_answered,
+                self.omitted.clone(),
+                self.deduped,
+                self.placement_version,
+                self.started.elapsed().as_millis() as u64,
+            )
+        });
         SearchUpdate {
             hits: self.hits.clone(),
             total_matched: self.total_matched,
             shards_answered: self.shards_answered,
             shards_queried: self.shards_queried,
             complete,
+            manifest,
         }
     }
 }
@@ -180,7 +268,7 @@ impl ProgressiveMerge {
 pub async fn scatter_gather_vector(
     leaders: Vec<String>,
     request: common::pb::VectorSearchRequest,
-) -> Vec<SearchResponse> {
+) -> Fanout {
     let mut set = JoinSet::new();
     for addr in leaders {
         let req = request.clone();
@@ -192,31 +280,33 @@ pub async fn scatter_gather_vector(
             })
             .await;
             match attempt {
-                Ok(Some(resp)) => Some(resp),
+                Ok(Some(resp)) => Ok(resp),
                 Ok(None) => {
                     eprintln!("fanout: shard omitted addr={addr} reason=unreachable");
-                    None
+                    Err(omitted(addr, "unreachable"))
                 }
                 Err(_) => {
                     eprintln!("fanout: shard omitted addr={addr} reason=timeout");
-                    None
+                    Err(omitted(addr, "timeout"))
                 }
             }
         });
     }
-    let mut responses = Vec::new();
+    let mut fanout = Fanout { responses: Vec::new(), omitted: Vec::new() };
     while let Some(joined) = set.join_next().await {
-        if let Ok(Some(resp)) = joined {
-            responses.push(resp);
+        match joined {
+            Ok(Ok(resp)) => fanout.responses.push(resp),
+            Ok(Err(o)) => fanout.omitted.push(o),
+            Err(_) => {} // task join error (panic) — treat as absent
         }
     }
-    responses
+    fanout
 }
 
 /// Query every leader address concurrently and collect the responses that succeed. A leader
 /// that can't be reached or errors is simply omitted — the caller reports coverage so the
 /// result is *partial*, not a failure of the whole query.
-pub async fn scatter_gather(leaders: Vec<String>, request: SearchRequest) -> Vec<SearchResponse> {
+pub async fn scatter_gather(leaders: Vec<String>, request: SearchRequest) -> Fanout {
     let mut set = JoinSet::new();
 
     for addr in leaders {
@@ -224,13 +314,15 @@ pub async fn scatter_gather(leaders: Vec<String>, request: SearchRequest) -> Vec
         set.spawn(query_leader(addr, req));
     }
 
-    let mut responses = Vec::new();
+    let mut fanout = Fanout { responses: Vec::new(), omitted: Vec::new() };
     while let Some(joined) = set.join_next().await {
-        if let Ok(Some(resp)) = joined {
-            responses.push(resp);
+        match joined {
+            Ok(Ok(resp)) => fanout.responses.push(resp),
+            Ok(Err(o)) => fanout.omitted.push(o),
+            Err(_) => {} // task join error (panic) — treat as absent
         }
     }
-    responses
+    fanout
 }
 
 #[cfg(test)]
@@ -245,6 +337,7 @@ mod tests {
                 ..Default::default()
             }),
             score,
+            provenance: None,
         }
     }
 
@@ -255,6 +348,7 @@ mod tests {
             shard_id: shard_id.to_string(),
             shards_queried: 0,
             shards_answered: 0,
+            manifest: None,
         }
     }
 
@@ -263,7 +357,7 @@ mod tests {
         let r0 = shard_response("shard-0", 2, vec![hit("aaa", 1.0), hit("bbb", 3.0)]);
         let r1 = shard_response("shard-1", 1, vec![hit("ccc", 2.0)]);
 
-        let merged = merge_search_responses(vec![r0, r1], 10, 2);
+        let merged = merge_search_responses(Fanout { responses: vec![r0, r1], omitted: vec![] }, 10, 2, 0, 0);
 
         assert_eq!(merged.total_matched, 3); // 2 + 1 across shards
         assert_eq!(merged.shards_queried, 2);
@@ -289,7 +383,7 @@ mod tests {
         let r0 = shard_response("group-0", 1, vec![stale]);
         let r1 = shard_response("group-1", 2, vec![fresh, hit("bbb", 1.0)]);
 
-        let merged = merge_search_responses(vec![r0, r1], 10, 2);
+        let merged = merge_search_responses(Fanout { responses: vec![r0, r1], omitted: vec![] }, 10, 2, 0, 0);
 
         // One hit per aircraft, and it's the FRESH one (higher observed_at beats score).
         assert_eq!(merged.hits.len(), 2);
@@ -303,7 +397,7 @@ mod tests {
 
     #[test]
     fn progressive_merge_also_dedups_across_shards() {
-        let mut merge = ProgressiveMerge::new(2, 10);
+        let mut merge = ProgressiveMerge::new(2, 10, 0);
         let mut stale = hit("aaa", 9.0);
         stale.document.as_mut().unwrap().observed_at = 100;
         let mut fresh = hit("aaa", 2.0);
@@ -322,7 +416,7 @@ mod tests {
         let r0 = shard_response("shard-0", 5, vec![hit("aaa", 1.0), hit("bbb", 3.0)]);
         let r1 = shard_response("shard-1", 4, vec![hit("ccc", 2.0)]);
 
-        let merged = merge_search_responses(vec![r0, r1], 1, 2);
+        let merged = merge_search_responses(Fanout { responses: vec![r0, r1], omitted: vec![] }, 1, 2, 0, 0);
 
         assert_eq!(merged.hits.len(), 1);
         assert_eq!(merged.hits[0].document.as_ref().unwrap().icao24, "bbb"); // top score
@@ -335,7 +429,7 @@ mod tests {
         let r0 = shard_response("shard-0", 1, vec![hit("aaa", 1.0)]);
         let r1 = shard_response("shard-1", 1, vec![hit("bbb", 2.0)]);
 
-        let merged = merge_search_responses(vec![r0, r1], 10, 3);
+        let merged = merge_search_responses(Fanout { responses: vec![r0, r1], omitted: vec![] }, 10, 3, 0, 0);
 
         assert_eq!(merged.shards_queried, 3);
         assert_eq!(merged.shards_answered, 2); // partial: one shard down
@@ -343,7 +437,7 @@ mod tests {
 
     #[test]
     fn no_shards_answered_is_empty_not_a_panic() {
-        let merged = merge_search_responses(vec![], 10, 3);
+        let merged = merge_search_responses(Fanout { responses: vec![], omitted: vec![] }, 10, 3, 0, 0);
         assert!(merged.hits.is_empty());
         assert_eq!(merged.total_matched, 0);
         assert_eq!(merged.shards_answered, 0);
@@ -352,7 +446,7 @@ mod tests {
 
     #[test]
     fn progressive_merge_accumulates_and_ranks_as_shards_arrive() {
-        let mut merge = ProgressiveMerge::new(2, 10);
+        let mut merge = ProgressiveMerge::new(2, 10, 0);
 
         merge.add(shard_response("shard-0", 2, vec![hit("aaa", 1.0), hit("bbb", 3.0)]));
         let first = merge.snapshot(false);
@@ -374,7 +468,7 @@ mod tests {
 
     #[test]
     fn progressive_merge_maintains_top_k() {
-        let mut merge = ProgressiveMerge::new(2, 1);
+        let mut merge = ProgressiveMerge::new(2, 1, 0);
         merge.add(shard_response("shard-0", 5, vec![hit("aaa", 1.0)]));
         merge.add(shard_response("shard-1", 5, vec![hit("bbb", 3.0)]));
         let snap = merge.snapshot(true);
