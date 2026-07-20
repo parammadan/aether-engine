@@ -20,6 +20,7 @@
 //! raft-managed shard runs at least 3 members — quorum 2 of 3 rides out one death.
 
 pub mod bootstrap;
+pub mod eviction;
 pub mod reconcile;
 
 // The shared machinery, re-exported under the paths this crate has always used.
@@ -58,14 +59,28 @@ impl From<Arc<RwLock<ShardStore>>> for ShardApp {
 
 impl consensus::StateMachineApp for ShardApp {
     fn apply(&self, payload: &[u8]) -> u32 {
-        // A committed batch: decode and upsert into the searchable store.
-        let decoded = common::pb::ReplicateRequest::decode(payload).unwrap_or_default();
-        let count = decoded.documents.len() as u32;
+        use common::pb::shard_command::Kind;
+        // Every log entry is a ShardCommand: index a batch, or evict a migrated vshard.
+        // Both are applied by every member in log order, so members converge identically.
+        let cmd = common::pb::ShardCommand::decode(payload).unwrap_or_default();
         let mut store = self.0.write().unwrap();
-        for doc in decoded.documents {
-            store.insert(doc);
+        match cmd.kind {
+            Some(Kind::Batch(batch)) => {
+                let count = batch.documents.len() as u32;
+                for doc in batch.documents {
+                    store.insert(doc);
+                }
+                count
+            }
+            Some(Kind::Evict(e)) => {
+                let removed = store.evict_vshard(e.vshard, e.v) as u32;
+                if removed > 0 {
+                    println!("raft: evicted {removed} documents of vshard {} (migrated away)", e.vshard);
+                }
+                removed
+            }
+            None => 0,
         }
-        count
     }
 
     fn snapshot_bytes(&self) -> Vec<u8> {

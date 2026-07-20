@@ -254,6 +254,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 shard_index,
             ));
 
+            // Under virtual-shard placement, the leader also evicts vshards that migrate
+            // away from this group — through the log, so members converge identically.
+            if let Some(assignments) = search_assignments.clone() {
+                tokio::spawn(shard_node::raft::eviction::run_eviction_watcher(
+                    raft.clone(),
+                    my_id,
+                    shard_index,
+                    assignments,
+                    index.clone(),
+                ));
+            }
+
             if ingest_on {
                 tokio::spawn(run_leader_ingestion(
                     build_source(&node_id),

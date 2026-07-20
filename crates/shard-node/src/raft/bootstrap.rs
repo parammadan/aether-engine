@@ -102,8 +102,12 @@ pub async fn run_leader_ingestion<S: FlightSource>(
                         .filter(|d| ownership.owns(&d.icao24))
                         .collect();
                     if !docs.is_empty() {
-                        let payload = common::pb::ReplicateRequest { documents: docs, shard_id: 0 }
-                            .encode_to_vec();
+                        let payload = common::pb::ShardCommand {
+                            kind: Some(common::pb::shard_command::Kind::Batch(
+                                common::pb::ReplicateRequest { documents: docs, shard_id: 0 },
+                            )),
+                        }
+                        .encode_to_vec();
                         // A refused write (e.g. leadership just moved) drops this batch and
                         // re-enters the standby loop; the source re-observes next poll, and
                         // upserts make replays harmless.

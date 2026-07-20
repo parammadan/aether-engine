@@ -76,6 +76,23 @@ impl ShardStore {
         k
     }
 
+    /// Evict every document whose virtual shard (`hash(icao24) % v`) is `vshard`. Returns
+    /// how many were removed. Used when a virtual shard migrates away from this group.
+    pub fn evict_vshard(&mut self, vshard: u32, v: u32) -> usize {
+        let Some(v) = std::num::NonZeroU32::new(v) else { return 0 };
+        let doomed: Vec<String> = self
+            .keyword
+            .documents()
+            .into_iter()
+            .filter(|d| common::shard::vshard_for(&d.icao24, v) == vshard)
+            .map(|d| d.icao24)
+            .collect();
+        for icao24 in &doomed {
+            self.remove(icao24);
+        }
+        doomed.len()
+    }
+
     /// Keyword search (see [`InvertedIndex::search`]).
     pub fn search(&self, query: &str, limit: usize) -> SearchResults<'_> {
         self.keyword.search(query, limit)

@@ -148,6 +148,24 @@ message ReplicateResponse {
   uint32 applied = 1; // how many documents the follower applied
 }
 
+// Evict every document whose virtual shard is `vshard` (computed as hash(icao24) % v).
+// Emitted when a virtual shard has migrated AWAY from this group: the old group must drop
+// its now-stale copies. Carried through the raft log so every member evicts identically.
+message EvictVShard {
+  uint32 vshard = 1;
+  uint32 v = 2; // the table length V (fixed for the cluster's life) — the modulus to use
+}
+
+// One entry in a shard group's replicated log. Committed entries are applied in order by
+// every member, so both kinds — indexing a batch and evicting a migrated vshard — converge
+// identically. (Snapshots remain a raw document dump; this envelope is the LOG format only.)
+message ShardCommand {
+  oneof kind {
+    ReplicateRequest batch = 1;
+    EvictVShard evict = 2;
+  }
+}
+
 // Served by follower nodes; the leader is the client.
 service Replication {
   rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
