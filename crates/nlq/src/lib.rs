@@ -210,21 +210,23 @@ impl Model for HeuristicModel {
             .into_iter()
             .find(|f| q.contains(*f))
             .unwrap_or("altitude");
-        let step = if q.contains("how many") || q.contains("count") {
-            Step::CallTool { name: "aggregate_flights".into(), args: json!({ "kind": "count" }) }
+        // Cluster/health intent wins first: a question like "is the cluster healthy? how
+        // many shards answered?" is about topology, even though it also says "how many".
+        let step = if q.contains("cluster") || q.contains("shard") || q.contains("health") || q.contains("nodes") {
+            Step::CallTool { name: "cluster_state".into(), args: json!({}) }
         } else if q.contains("percentile") || q.contains("p50") || q.contains("p90") || q.contains("p99") {
             Step::CallTool {
                 name: "aggregate_flights".into(),
                 args: json!({ "kind": "percentiles", "field": numeric, "percentiles": [50, 90, 99] }),
             }
-        } else if q.contains("aircraft") || q.contains("by origin") || q.contains("origins") {
+        } else if q.contains("how many") || q.contains("count") {
+            Step::CallTool { name: "aggregate_flights".into(), args: json!({ "kind": "count" }) }
+        } else if q.contains("aircraft") || q.contains("origin") || q.contains("countries") || q.contains("by ") {
             let field = if q.contains("aircraft") { "aircraft_type" } else { "origin" };
             Step::CallTool {
                 name: "aggregate_flights".into(),
                 args: json!({ "kind": "value_counts", "field": field }),
             }
-        } else if q.contains("cluster") || q.contains("shard") || q.contains("health") || q.contains("nodes") {
-            Step::CallTool { name: "cluster_state".into(), args: json!({}) }
         } else {
             Step::CallTool { name: "search_flights".into(), args: json!({ "query": turn.question }) }
         };

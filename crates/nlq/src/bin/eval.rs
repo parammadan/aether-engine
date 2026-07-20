@@ -17,9 +17,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let spec: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     let questions = spec["questions"].as_array().ok_or("questions must be an array")?;
 
-    let model = nlq::bedrock::from_env()
-        .await
-        .ok_or("no model: set AETHER_BEDROCK_MODEL and build --features bedrock")?;
+    // Prefer the live Bedrock model when configured; otherwise fall back to the offline
+    // heuristic planner so the eval runs with NO AWS and no errors — a router smoke-eval
+    // rather than a language-quality eval, labeled as such.
+    let (model, label): (std::sync::Arc<dyn nlq::Model>, &str) = match nlq::bedrock::from_env().await {
+        Some(m) => (m, "bedrock"),
+        None => (std::sync::Arc::new(nlq::HeuristicModel), "heuristic (offline)"),
+    };
+    println!("model: {label}");
 
     let mut passed = 0usize;
     println!("== NLQ live eval ({} questions) ==", questions.len());
