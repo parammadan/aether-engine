@@ -62,7 +62,10 @@ fn batch(icao24: &str, callsign: &str) -> DocBatch {
         }],
         shard_id: 0,
     };
-    DocBatch(req.encode_to_vec())
+    let cmd = common::pb::ShardCommand {
+        kind: Some(common::pb::shard_command::Kind::Batch(req)),
+    };
+    DocBatch(cmd.encode_to_vec())
 }
 
 /// Poll until a member's store can find the callsign (committed entries apply async).

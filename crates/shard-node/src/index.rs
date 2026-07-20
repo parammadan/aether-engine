@@ -66,6 +66,23 @@ pub struct InvertedIndex {
     by_key: HashMap<String, DocId>,
     /// Retired slots available for reuse.
     free: Vec<DocId>,
+    /// Token count per slot (0 for retired slots) — the "document length" BM25 normalizes
+    /// by, so a long field can't out-score a short one just by having more words.
+    doc_len: Vec<u32>,
+    /// Sum of all live document lengths; `total_len / len()` is avgdl.
+    total_len: u64,
+}
+
+/// BM25 parameters. Standard defaults (k1=1.2, b=0.75), overridable per process for
+/// experimentation — no knob without a way to measure it (the smoke A/B, and the Y2 eval
+/// harness). Read once.
+fn bm25_params() -> (f64, f64) {
+    static PARAMS: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
+    *PARAMS.get_or_init(|| {
+        let k1 = std::env::var("AETHER_BM25_K1").ok().and_then(|s| s.parse().ok()).unwrap_or(1.2);
+        let b = std::env::var("AETHER_BM25_B").ok().and_then(|s| s.parse().ok()).unwrap_or(0.75);
+        (k1, b)
+    })
 }
 
 impl InvertedIndex {
@@ -75,6 +92,8 @@ impl InvertedIndex {
             postings: HashMap::new(),
             by_key: HashMap::new(),
             free: Vec::new(),
+            doc_len: Vec::new(),
+            total_len: 0,
         }
     }
 
@@ -127,6 +146,9 @@ impl InvertedIndex {
             // Frequencies are computed up front so the immutable borrow of the stored doc
             // ends before we mutate the postings map.
             let freqs = Self::term_freqs(self.docs[doc_id as usize].as_ref().unwrap());
+            let new_len: u32 = freqs.values().sum();
+            self.total_len = self.total_len - self.doc_len[doc_id as usize] as u64 + new_len as u64;
+            self.doc_len[doc_id as usize] = new_len;
             for (term, term_freq) in freqs {
                 self.postings
                     .entry(term)
@@ -137,17 +159,21 @@ impl InvertedIndex {
         }
 
         let freqs = Self::term_freqs(&doc);
+        let len: u32 = freqs.values().sum();
         let key = doc.icao24.clone();
         let doc_id = match self.free.pop() {
             Some(slot) => {
                 self.docs[slot as usize] = Some(doc);
+                self.doc_len[slot as usize] = len;
                 slot
             }
             None => {
                 self.docs.push(Some(doc));
+                self.doc_len.push(len);
                 (self.docs.len() - 1) as DocId
             }
         };
+        self.total_len += len as u64;
         self.by_key.insert(key, doc_id);
         for (term, term_freq) in freqs {
             self.postings.entry(term).or_default().push(Posting { doc_id, term_freq });
@@ -165,6 +191,8 @@ impl InvertedIndex {
             .take()
             .expect("by_key never points at a retired slot");
         self.remove_postings(doc_id, &doc);
+        self.total_len -= self.doc_len[doc_id as usize] as u64;
+        self.doc_len[doc_id as usize] = 0;
         self.free.push(doc_id);
         true
     }
@@ -181,12 +209,33 @@ impl InvertedIndex {
             };
         }
 
-        // Accumulate a score per matched document.
+        // BM25 scoring. Per matching query term, add idf(term) weighted by a saturating,
+        // length-normalized term frequency — so common terms count for little (idf) and a
+        // long field can't win on raw word count (the dl/avgdl normalization).
+        let (k1, b) = bm25_params();
+        let n = self.by_key.len() as f64;
+        let avgdl = if self.by_key.is_empty() {
+            1.0
+        } else {
+            (self.total_len as f64 / n).max(1.0)
+        };
+
+        // A query term repeated shouldn't multiply its own idf; score each distinct term once.
+        let mut seen_terms = std::collections::HashSet::new();
         let mut scores: HashMap<DocId, f64> = HashMap::new();
         for term in terms {
+            if !seen_terms.insert(term.clone()) {
+                continue;
+            }
             if let Some(postings) = self.postings.get(&term) {
+                let df = postings.len() as f64;
+                // idf with the standard +0.5 smoothing; the +1 inside ln keeps it non-negative.
+                let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
                 for posting in postings {
-                    *scores.entry(posting.doc_id).or_insert(0.0) += posting.term_freq as f64;
+                    let tf = posting.term_freq as f64;
+                    let dl = self.doc_len[posting.doc_id as usize] as f64;
+                    let norm = tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * dl / avgdl));
+                    *scores.entry(posting.doc_id).or_insert(0.0) += idf * norm;
                 }
             }
         }
@@ -303,6 +352,43 @@ mod tests {
         assert_eq!(r.total_matched, 2);
         assert_eq!(r.hits[0].doc.icao24, "hi");
         assert!(r.hits[0].score > r.hits[1].score);
+    }
+
+    #[test]
+    fn bm25_idf_favours_the_rarer_term() {
+        // "boeing" appears in almost every doc (common → low idf); "concorde" in one
+        // (rare → high idf). A doc matching BOTH must outrank docs matching only "boeing",
+        // because the rare term carries far more information.
+        let mut idx = InvertedIndex::new();
+        for i in 0..20 {
+            idx.insert(doc(&format!("c{i}"), &format!("F{i}"), "SFO", "JFK", "Boeing 737"));
+        }
+        idx.insert(doc("rare", "F99", "SFO", "JFK", "Concorde Boeing"));
+
+        let r = idx.search("concorde boeing", 5);
+        assert_eq!(r.hits[0].doc.icao24, "rare", "the doc with the rare term must rank first");
+    }
+
+    #[test]
+    fn bm25_length_normalization_favours_the_shorter_field() {
+        // Same single match of "sfo", but one doc is padded with many other tokens. BM25
+        // normalizes by length, so the shorter document scores higher for that one match.
+        let mut idx = InvertedIndex::new();
+        idx.insert(doc("short", "X1", "SFO", "", ""));
+        idx.insert(doc("long", "X2", "SFO", "LAX ORD DEN ATL", "Boeing 777 Airbus A320 Embraer"));
+        let r = idx.search("sfo", 5);
+        assert_eq!(r.total_matched, 2);
+        assert_eq!(r.hits[0].doc.icao24, "short", "shorter doc wins for the same single match");
+    }
+
+    #[test]
+    fn bm25_repeated_query_term_is_not_double_counted() {
+        let idx = sample();
+        // Repeating a term in the query must not multiply its contribution.
+        let once = idx.search("boeing", 10);
+        let twice = idx.search("boeing boeing", 10);
+        assert_eq!(once.hits.len(), twice.hits.len());
+        assert!((once.hits[0].score - twice.hits[0].score).abs() < 1e-9);
     }
 
     #[test]
