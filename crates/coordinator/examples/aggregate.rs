@@ -4,7 +4,7 @@
 //!   cargo run -p coordinator --example aggregate -- percentiles altitude
 //!   cargo run -p coordinator --example aggregate -- count
 //!
-//! Args: <kind> [field] [interval]. Addresses from AETHER_COORDINATOR_ADDRS /
+//! Args: <kind> [field] [interval] [field=value|field=min..max ...]. Addresses from AETHER_COORDINATOR_ADDRS /
 //! AETHER_COORDINATOR_ADDR (default 127.0.0.1:50050).
 
 use common::pb::{AggKind, AggregateRequest};
@@ -15,6 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let kind_arg = std::env::args().nth(1).unwrap_or_else(|| "count".to_string());
     let field = std::env::args().nth(2).unwrap_or_default();
     let interval: f64 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let filter_args: Vec<String> = std::env::args().skip(4).collect();
+    let filter = common::client::parse_filter_args(&filter_args)?;
 
     let kind = match kind_arg.as_str() {
         "count" => AggKind::AggCount,
@@ -35,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             field,
             interval,
             percentiles: vec![50.0, 90.0, 99.0],
-            filter: None,
+            filter,
         }))
         .await?
         .into_inner();

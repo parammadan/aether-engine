@@ -48,7 +48,8 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "keywords, e.g. a callsign or a country" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "max results (default 5)" }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "max results (default 5)" },
+                    "filters": { "type": "array", "description": "structured conditions, ANDed. Each: {field, equals} for text (origin, aircraft_type, callsign...), {field, min?, max?} for numeric (altitude, velocity, observed_at...), {field, is} for on_ground.", "items": { "type": "object" } }
                 },
                 "required": ["query"]
             }
@@ -87,7 +88,8 @@ fn tool_definitions() -> Value {
                     "query": { "type": "string", "description": "optional keyword filter (empty = all flights)" },
                     "field": { "type": "string", "description": "field for value_counts (origin, aircraft_type, ...) or numeric_histogram/percentiles (altitude, velocity, ...)" },
                     "interval": { "type": "number", "description": "bucket width: ms for time, units for numeric, degrees for geo_grid" },
-                    "percentiles": { "type": "array", "items": { "type": "number" }, "description": "for percentiles, e.g. [50, 95, 99]" }
+                    "percentiles": { "type": "array", "items": { "type": "number" }, "description": "for percentiles, e.g. [50, 95, 99]" },
+                    "filters": { "type": "array", "description": "structured conditions, ANDed. Each: {field, equals} for text, {field, min?, max?} for numeric, {field, is} for on_ground.", "items": { "type": "object" } }
                 },
                 "required": ["kind"]
             }
@@ -116,6 +118,38 @@ fn format_hits(resp: &common::pb::SearchResponse) -> String {
     out
 }
 
+/// Parse the tools' `filters` argument into the wire Filter. Shape errors are tool errors
+/// (the model can read them and fix its call); semantic errors (unknown field) surface
+/// from the server's own validation.
+fn parse_filters(args: &Value) -> Result<Option<common::pb::Filter>, String> {
+    use common::pb::{filter_condition::Test, Filter, FilterCondition, NumericRange};
+    let Some(list) = args.get("filters").and_then(|v| v.as_array()) else {
+        return Ok(None);
+    };
+    let mut conditions = Vec::new();
+    for c in list {
+        let field = c
+            .get("field")
+            .and_then(|v| v.as_str())
+            .ok_or("each filter needs a 'field'")?
+            .to_string();
+        let test = if let Some(eq) = c.get("equals").and_then(|v| v.as_str()) {
+            Test::Equals(eq.to_string())
+        } else if c.get("min").is_some() || c.get("max").is_some() {
+            Test::Range(NumericRange {
+                min: c.get("min").and_then(|v| v.as_f64()),
+                max: c.get("max").and_then(|v| v.as_f64()),
+            })
+        } else if let Some(b) = c.get("is").and_then(|v| v.as_bool()) {
+            Test::Is(b)
+        } else {
+            return Err(format!("filter on '{field}' needs 'equals', 'min'/'max', or 'is'"));
+        };
+        conditions.push(FilterCondition { field, test: Some(test) });
+    }
+    Ok(if conditions.is_empty() { None } else { Some(Filter { conditions }) })
+}
+
 async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
     match name {
@@ -126,7 +160,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
                 .ok_or("missing required argument: query")?;
             let mut client = connect().await?;
             let resp = client
-                .search(common::net::with_token(SearchRequest { query: query.to_string(), limit, filter: None }))
+                .search(common::net::with_token(SearchRequest { query: query.to_string(), limit, filter: parse_filters(args)? }))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();
@@ -191,7 +225,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
                     .unwrap_or_default(),
-                filter: None,
+                filter: parse_filters(args)?,
             };
             let mut client = connect().await?;
             let resp = client

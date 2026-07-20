@@ -61,6 +61,35 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Parse CLI filter arguments into a wire Filter: `field=value` (text equals),
+/// `field=min..max` (numeric range; either side may be empty), `field=true|false`
+/// (boolean). Returns None for an empty list.
+pub fn parse_filter_args(args: &[String]) -> Result<Option<crate::pb::Filter>, String> {
+    use crate::pb::{filter_condition::Test, Filter, FilterCondition, NumericRange};
+    let mut conditions = Vec::new();
+    for arg in args {
+        let (field, value) = arg
+            .split_once('=')
+            .ok_or_else(|| format!("filter '{arg}' must look like field=value or field=min..max"))?;
+        let test = if let Some((lo, hi)) = value.split_once("..") {
+            let parse = |s: &str| -> Result<Option<f64>, String> {
+                if s.is_empty() {
+                    Ok(None)
+                } else {
+                    s.parse().map(Some).map_err(|_| format!("'{s}' is not a number in '{arg}'"))
+                }
+            };
+            Test::Range(NumericRange { min: parse(lo)?, max: parse(hi)? })
+        } else if value == "true" || value == "false" {
+            Test::Is(value == "true")
+        } else {
+            Test::Equals(value.to_string())
+        };
+        conditions.push(FilterCondition { field: field.to_string(), test: Some(test) });
+    }
+    Ok(if conditions.is_empty() { None } else { Some(crate::pb::Filter { conditions }) })
+}
+
 /// Connect to the first coordinator in the list that accepts the connection.
 pub async fn connect_first_healthy(
     addrs: &[String],
