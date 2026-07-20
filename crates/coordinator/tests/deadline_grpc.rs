@@ -139,7 +139,7 @@ async fn unary_search_is_bounded_by_the_deadline_not_the_slowest_shard() {
 
     let t0 = Instant::now();
     let resp = client
-        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -157,7 +157,7 @@ async fn vector_search_is_bounded_by_the_deadline() {
 
     let t0 = Instant::now();
     let resp = client
-        .vector_search(VectorSearchRequest { vector: vec![0.0; 128], limit: 10 })
+        .vector_search(VectorSearchRequest { vector: vec![0.0; 128], limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -174,7 +174,7 @@ async fn streaming_search_completes_within_the_deadline_bound() {
 
     let t0 = Instant::now();
     let mut stream = client
-        .search_stream(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search_stream(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();

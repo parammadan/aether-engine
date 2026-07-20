@@ -85,6 +85,7 @@ fn req(kind: AggKind, field: &str, interval: f64) -> AggregateRequest {
         field: field.to_string(),
         interval,
         percentiles: vec![50.0, 90.0, 99.0],
+        filter: None,
     }
 }
 

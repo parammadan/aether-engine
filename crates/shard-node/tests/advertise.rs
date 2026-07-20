@@ -77,7 +77,7 @@ async fn node_registers_its_advertised_address_not_its_bind_address() {
 
     // ...and that address must actually be routable: a fan-out query reaches the node.
     let resp = client
-        .search(SearchRequest { query: "anything".into(), limit: 1 })
+        .search(SearchRequest { query: "anything".into(), limit: 1, filter: None })
         .await
         .unwrap()
         .into_inner();

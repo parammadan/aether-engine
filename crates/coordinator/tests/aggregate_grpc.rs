@@ -74,6 +74,7 @@ fn value_counts(field: &str) -> AggregateRequest {
         field: field.to_string(),
         interval: 0.0,
         percentiles: vec![],
+        filter: None,
     }
 }
 

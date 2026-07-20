@@ -84,7 +84,7 @@ async fn node_registers_and_heartbeats_every_coordinator_and_survives_losing_one
 
     let mut client = CoordinatorClient::connect(format!("http://{coord_b}")).await.unwrap();
     let resp = client
-        .search(SearchRequest { query: "anything".into(), limit: 1 })
+        .search(SearchRequest { query: "anything".into(), limit: 1, filter: None })
         .await
         .unwrap()
         .into_inner();

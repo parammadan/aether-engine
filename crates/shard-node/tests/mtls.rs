@@ -134,7 +134,7 @@ async fn raft_group_forms_and_serves_entirely_over_mtls() {
         let state = client.get_cluster_state(ClusterStateRequest {}).await.unwrap().into_inner();
         if let Some(l) = state.nodes.iter().find(|n| n.role == NodeRole::Leader as i32) {
             let resp = client
-                .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+                .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
                 .await
                 .unwrap()
                 .into_inner();
@@ -149,7 +149,7 @@ async fn raft_group_forms_and_serves_entirely_over_mtls() {
 
     // A routed query returns real hits, all of it TLS from client to shard and back.
     let resp = client
-        .search(SearchRequest { query: "synthetica".into(), limit: 3 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 3, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -168,7 +168,7 @@ async fn raft_group_forms_and_serves_entirely_over_mtls() {
         if let Some(l) = state.nodes.iter().find(|n| n.role == NodeRole::Leader as i32) {
             if l.node_id != leader {
                 let resp = client
-                    .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+                    .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
                     .await
                     .unwrap()
                     .into_inner();

@@ -72,7 +72,7 @@ fn spawn_member(node_id: &str, group: u32, coordinator: &str) -> (Child, String)
 
 async fn member_count(addr: &str) -> Option<u64> {
     let mut c = ShardSearchClient::connect(format!("http://{addr}")).await.ok()?;
-    let r = c.search(SearchRequest { query: "synthetica".into(), limit: 1 }).await.ok()?;
+    let r = c.search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None }).await.ok()?;
     Some(r.into_inner().total_matched)
 }
 
@@ -108,7 +108,7 @@ async fn a_group_that_loses_all_its_vshards_sheds_the_documents_on_every_member(
         let mut client = client.clone();
         async move {
             loop {
-                match client.search(SearchRequest { query: "synthetica".into(), limit: 100 }).await {
+                match client.search(SearchRequest { query: "synthetica".into(), limit: 100, filter: None }).await {
                     Ok(resp) => {
                         let resp = resp.into_inner();
                         *latest_total.lock().unwrap() = resp.total_matched;

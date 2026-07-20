@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut client = common::client::connect_first_healthy(&addrs).await?;
     let mut stream = client
-        .search_stream(common::net::with_token(SearchRequest { query: query.clone(), limit }))
+        .search_stream(common::net::with_token(SearchRequest { query: query.clone(), limit, filter: None }))
         .await?
         .into_inner();
 

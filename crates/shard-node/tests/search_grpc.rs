@@ -62,7 +62,7 @@ async fn search_over_grpc_returns_matching_hits() {
 
     // "sfo" is a1b2c3's origin and aa11bb's destination -> 2 matches.
     let resp = client
-        .search(SearchRequest { query: "sfo".to_string(), limit: 10 })
+        .search(SearchRequest { query: "sfo".to_string(), limit: 10, filter: None })
         .await
         .expect("search RPC failed")
         .into_inner();
@@ -84,7 +84,7 @@ async fn search_respects_limit_but_reports_total() {
     let mut client = start_server_and_client().await;
 
     let resp = client
-        .search(SearchRequest { query: "boeing".to_string(), limit: 1 })
+        .search(SearchRequest { query: "boeing".to_string(), limit: 1, filter: None })
         .await
         .expect("search RPC failed")
         .into_inner();
@@ -98,7 +98,7 @@ async fn search_with_no_match_is_empty() {
     let mut client = start_server_and_client().await;
 
     let resp = client
-        .search(SearchRequest { query: "helicopter".to_string(), limit: 10 })
+        .search(SearchRequest { query: "helicopter".to_string(), limit: 10, filter: None })
         .await
         .expect("search RPC failed")
         .into_inner();
@@ -115,7 +115,7 @@ async fn vector_search_over_grpc_ranks_semantically_closest_first() {
     // vector; a query overlapping the Boeing/UAL docs should rank one of them first.
     let query = HashEmbedder.embed("UAL231 Boeing SFO");
     let resp = client
-        .vector_search(VectorSearchRequest { vector: query, limit: 3 })
+        .vector_search(VectorSearchRequest { vector: query, limit: 3, filter: None })
         .await
         .expect("vector search RPC failed")
         .into_inner();
@@ -132,7 +132,7 @@ async fn vector_search_rejects_wrong_dimension() {
     let mut client = start_server_and_client().await;
 
     let err = client
-        .vector_search(VectorSearchRequest { vector: vec![0.5; 7], limit: 3 })
+        .vector_search(VectorSearchRequest { vector: vec![0.5; 7], limit: 3, filter: None })
         .await
         .expect_err("a 7-dim vector must be rejected");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);

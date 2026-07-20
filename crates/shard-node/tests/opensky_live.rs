@@ -64,7 +64,7 @@ async fn end_to_end_live_search_over_grpc() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     };
     let resp = client
-        .search(SearchRequest { query: "united".to_string(), limit: 5 })
+        .search(SearchRequest { query: "united".to_string(), limit: 5, filter: None })
         .await
         .expect("search RPC failed")
         .into_inner();

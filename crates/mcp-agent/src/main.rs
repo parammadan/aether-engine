@@ -126,7 +126,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
                 .ok_or("missing required argument: query")?;
             let mut client = connect().await?;
             let resp = client
-                .search(common::net::with_token(SearchRequest { query: query.to_string(), limit }))
+                .search(common::net::with_token(SearchRequest { query: query.to_string(), limit, filter: None }))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();
@@ -140,7 +140,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
             let vector = HashEmbedder.embed(query);
             let mut client = connect().await?;
             let resp = client
-                .vector_search(common::net::with_token(VectorSearchRequest { vector, limit }))
+                .vector_search(common::net::with_token(VectorSearchRequest { vector, limit, filter: None }))
                 .await
                 .map_err(|e| e.to_string())?
                 .into_inner();
@@ -191,6 +191,7 @@ async fn call_tool(name: &str, args: &Value) -> Result<String, String> {
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
                     .unwrap_or_default(),
+                filter: None,
             };
             let mut client = connect().await?;
             let resp = client

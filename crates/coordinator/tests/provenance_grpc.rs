@@ -94,7 +94,7 @@ async fn every_hit_carries_provenance_and_the_manifest_reports_coverage() {
     let mut client = start_coordinator(registry).await;
 
     let resp = client
-        .search(SearchRequest { query: "synthetica".into(), limit: 10 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -134,7 +134,7 @@ async fn a_dead_shard_is_named_in_the_manifest_with_a_reason() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let resp = client
-        .search(SearchRequest { query: "synthetica".into(), limit: 10 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();

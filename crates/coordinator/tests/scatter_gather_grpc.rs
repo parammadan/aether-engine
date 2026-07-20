@@ -137,7 +137,7 @@ async fn coordinator_merges_results_across_shards() {
 
     let mut client = start_coordinator(registry).await;
     let resp = client
-        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -164,7 +164,7 @@ async fn search_stream_converges_across_shards_and_marks_complete() {
 
     let mut client = start_coordinator(registry).await;
     let mut stream = client
-        .search_stream(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search_stream(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -200,7 +200,7 @@ async fn search_stream_completes_even_when_a_shard_dies_mid_aggregation() {
 
     let mut client = start_coordinator(registry).await;
     let mut stream = client
-        .search_stream(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search_stream(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -245,7 +245,7 @@ async fn failover_promotes_follower_and_queries_route_to_it() {
 
     // Before failover the query is served by the leader.
     let before = client
-        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -262,7 +262,7 @@ async fn failover_promotes_follower_and_queries_route_to_it() {
 
     // After failover the same query is now served by the promoted follower.
     let after = client
-        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -301,7 +301,7 @@ async fn queries_keep_flowing_when_a_leader_is_killed_under_load() {
         let mut client = client.clone();
         async move {
             while !stop.load(Ordering::Relaxed) {
-                let outcome = match client.search(SearchRequest { query: "x".to_string(), limit: 10 }).await {
+                let outcome = match client.search(SearchRequest { query: "x".to_string(), limit: 10, filter: None }).await {
                     Ok(resp) => Ok(resp
                         .into_inner()
                         .hits
@@ -363,7 +363,7 @@ async fn coordinator_returns_partial_results_when_a_shard_is_down() {
 
     let mut client = start_coordinator(registry).await;
     let resp = client
-        .search(SearchRequest { query: "x".to_string(), limit: 10 })
+        .search(SearchRequest { query: "x".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();

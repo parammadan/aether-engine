@@ -63,7 +63,7 @@ async fn scopes_are_enforced_on_client_facing_rpcs() {
         "read token must read cluster state"
     );
     assert!(
-        c.search(with_bearer(SearchRequest { query: "x".into(), limit: 1 }, Some("read-token"))).await.is_ok(),
+        c.search(with_bearer(SearchRequest { query: "x".into(), limit: 1, filter: None }, Some("read-token"))).await.is_ok(),
         "read token must query"
     );
     let denied = c
@@ -83,7 +83,7 @@ async fn scopes_are_enforced_on_client_facing_rpcs() {
 
     // MISSING token: refused when auth is on.
     assert_eq!(
-        c.search(with_bearer(SearchRequest { query: "x".into(), limit: 1 }, None)).await.unwrap_err().code(),
+        c.search(with_bearer(SearchRequest { query: "x".into(), limit: 1, filter: None }, None)).await.unwrap_err().code(),
         Code::Unauthenticated,
         "no token must be refused"
     );

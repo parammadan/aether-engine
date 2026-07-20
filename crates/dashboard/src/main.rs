@@ -188,7 +188,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
 
             // One live query through the scatter-gather path.
             let t0 = Instant::now();
-            match client.search(common::net::with_token(SearchRequest { query: query_term.clone(), limit: 3 })).await {
+            match client.search(common::net::with_token(SearchRequest { query: query_term.clone(), limit: 3, filter: None })).await {
                 Ok(resp) => {
                     let r = resp.into_inner();
                     app.query_ok.fetch_add(1, Ordering::Relaxed);
@@ -230,6 +230,7 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                     field: "origin".to_string(),
                     interval: 0.0,
                     percentiles: vec![],
+                    filter: None,
                 }))
                 .await
             {

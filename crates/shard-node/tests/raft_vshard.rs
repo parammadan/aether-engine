@@ -98,7 +98,7 @@ async fn reassigning_virtual_shards_moves_ingestion_between_groups_live() {
         let mut client = client.clone();
         async move {
             loop {
-                match client.search(SearchRequest { query: "synthetica".into(), limit: 50 }).await {
+                match client.search(SearchRequest { query: "synthetica".into(), limit: 50, filter: None }).await {
                     Ok(resp) => {
                         let resp = resp.into_inner();
                         *latest_total.lock().unwrap() = resp.total_matched;
@@ -156,14 +156,14 @@ async fn reassigning_virtual_shards_moves_ingestion_between_groups_live() {
     for _ in 0..30 {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let g0_before = g0
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);
         let cluster_before = *latest_total.lock().unwrap();
         tokio::time::sleep(Duration::from_secs(3)).await;
         let g0_after = g0
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);

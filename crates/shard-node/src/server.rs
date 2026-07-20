@@ -85,6 +85,9 @@ impl ShardSearch for ShardSearchService {
     ) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
         let limit = req.limit as usize;
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(|e| Status::invalid_argument(e))?;
+        }
 
         // A poisoned lock means a prior handler panicked mid-write; surface it as an
         // internal error rather than propagating the panic.
@@ -93,19 +96,27 @@ impl ShardSearch for ShardSearchService {
             .read()
             .map_err(|_| Status::internal("store lock poisoned"))?;
 
-        let results = store.search(&req.query, limit);
+        // With a filter, rank the FULL match set, filter, then truncate — so
+        // `total_matched` counts filtered matches and the top-k is the filtered top-k.
+        let fetch = if req.filter.is_some() { 0 } else { limit };
+        let results = store.search(&req.query, fetch);
 
         // Map internal scored hits to the wire type. We clone each stored document into the
         // response; the read guard is dropped at the end of this scope (no `.await` held).
-        let hits: Vec<SearchHit> = results
+        let mut hits: Vec<SearchHit> = results
             .hits
             .iter()
+            .filter(|hit| common::filter::passes(hit.doc, req.filter.as_ref()))
             .map(|hit| self.hit(hit.doc.clone(), hit.score, common::pb::IndexKind::IndexKeyword))
             .collect();
+        let total_matched = if req.filter.is_some() { hits.len() } else { results.total_matched };
+        if req.filter.is_some() && limit != 0 && hits.len() > limit {
+            hits.truncate(limit);
+        }
 
         Ok(Response::new(SearchResponse {
             hits,
-            total_matched: results.total_matched as u64,
+            total_matched: total_matched as u64,
             shard_id: self.shard_id.clone(),
             // Coverage fields are a coordinator-level concept; a single shard leaves them 0.
             shards_queried: 0,
@@ -120,6 +131,9 @@ impl ShardSearch for ShardSearchService {
     ) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
         let k = if req.limit == 0 { DEFAULT_KNN } else { req.limit as usize };
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(|e| Status::invalid_argument(e))?;
+        }
 
         let store = self
             .store
@@ -137,11 +151,17 @@ impl ShardSearch for ShardSearchService {
             )));
         }
 
-        let hits: Vec<SearchHit> = store
-            .vector_search(&req.vector, k)
+        // k-NN + filter: over-fetch (a filtered kNN can't know in advance how many of the
+        // k nearest survive), filter, truncate to k. 4x is a pragmatic headroom, honestly
+        // partial when a filter is very selective — the alternative is scanning everything.
+        let fetch = if req.filter.is_some() { k.saturating_mul(4) } else { k };
+        let mut hits: Vec<SearchHit> = store
+            .vector_search(&req.vector, fetch)
             .iter()
+            .filter(|hit| common::filter::passes(hit.doc, req.filter.as_ref()))
             .map(|hit| self.hit(hit.doc.clone(), hit.score, common::pb::IndexKind::IndexVector))
             .collect();
+        hits.truncate(k);
 
         // k-NN returns the k best neighbours; there is no cluster-wide "total matched"
         // notion, so report exactly what we returned.
@@ -162,12 +182,19 @@ impl ShardSearch for ShardSearchService {
         request: Request<AggregateRequest>,
     ) -> Result<Response<AggregateResponse>, Status> {
         let req = request.into_inner();
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(|e| Status::invalid_argument(e))?;
+        }
         let store = self
             .store
             .read()
             .map_err(|_| Status::internal("store lock poisoned"))?;
-        // One pass over the matching documents; the coordinator merges partials.
-        let matched = store.matching(&req.query);
+        // One pass over the matching (and filtered) documents; the coordinator merges.
+        let matched: Vec<&common::pb::FlightDocument> = store
+            .matching(&req.query)
+            .into_iter()
+            .filter(|d| common::filter::passes(d, req.filter.as_ref()))
+            .collect();
         let partial = crate::agg::partial(&matched, &req);
         Ok(Response::new(AggregateResponse {
             partial: Some(partial),

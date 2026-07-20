@@ -35,7 +35,7 @@ fn free_port() -> u16 {
 async fn matched_via(addr: &str) -> Option<(u32, u64)> {
     let mut c = CoordinatorClient::connect(format!("http://{addr}")).await.ok()?;
     let resp = c
-        .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
         .await
         .ok()?
         .into_inner();

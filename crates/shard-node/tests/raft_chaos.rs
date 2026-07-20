@@ -103,7 +103,7 @@ async fn queries_and_ingestion_survive_raft_leader_sigkill() {
         let mut client = client.clone();
         async move {
             loop {
-                match client.search(SearchRequest { query: "synthetica".into(), limit: 3 }).await {
+                match client.search(SearchRequest { query: "synthetica".into(), limit: 3, filter: None }).await {
                     Ok(resp) => *latest_total.lock().unwrap() = resp.into_inner().total_matched,
                     Err(status) => errors.lock().unwrap().push(status.to_string()),
                 }

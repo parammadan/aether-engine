@@ -117,7 +117,7 @@ async fn cold_boot_recovers_the_store_from_s3_after_total_local_loss() {
     let mut before_kill = 0u64;
     for _ in 0..120 {
         before_kill = direct
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);
@@ -149,7 +149,7 @@ async fn cold_boot_recovers_the_store_from_s3_after_total_local_loss() {
     let mut recovered = 0u64;
     for _ in 0..60 {
         recovered = direct
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);
@@ -166,7 +166,7 @@ async fn cold_boot_recovers_the_store_from_s3_after_total_local_loss() {
     // And it recovered the ORIGINAL documents, not regenerated ones: with ingestion off,
     // a specific early synthetic callsign can only exist via the snapshot.
     let syn0 = direct
-        .search(SearchRequest { query: "SYN0".into(), limit: 1 })
+        .search(SearchRequest { query: "SYN0".into(), limit: 1, filter: None })
         .await
         .unwrap()
         .into_inner();

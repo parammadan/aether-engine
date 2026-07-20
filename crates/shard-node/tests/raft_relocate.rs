@@ -71,7 +71,7 @@ fn spawn_member(node_id: &str, coordinator: &str, port: u16, joining: bool) -> C
 
 async fn total_on(client: &mut ShardSearchClient<tonic::transport::Channel>) -> u64 {
     client
-        .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
         .await
         .map(|r| r.into_inner().total_matched)
         .unwrap_or(0)
@@ -105,7 +105,7 @@ async fn a_replica_relocates_from_one_node_to_another_without_dropping_queries()
         let mut client = client.clone();
         async move {
             loop {
-                match client.search(SearchRequest { query: "synthetica".into(), limit: 3 }).await {
+                match client.search(SearchRequest { query: "synthetica".into(), limit: 3, filter: None }).await {
                     Ok(resp) => *latest_total.lock().unwrap() = resp.into_inner().total_matched,
                     Err(status) => errors.lock().unwrap().push(status.to_string()),
                 }

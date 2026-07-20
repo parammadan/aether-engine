@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let limit: u32 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(3);
 
     let mut client = ShardSearchClient::new(common::net::channel(&addr).await?);
-    let resp = client.search(SearchRequest { query, limit }).await?.into_inner();
+    let resp = client.search(SearchRequest { query, limit, filter: None }).await?.into_inner();
 
     println!("total_matched={}", resp.total_matched);
     for hit in resp.hits {

@@ -54,7 +54,7 @@ async fn leader_replicates_to_follower_which_then_serves_the_data() {
 
     // Before replication the follower is empty.
     let before = client
-        .search(SearchRequest { query: "ual231".to_string(), limit: 10 })
+        .search(SearchRequest { query: "ual231".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();
@@ -70,7 +70,7 @@ async fn leader_replicates_to_follower_which_then_serves_the_data() {
 
     // The follower now serves the replicated data.
     let after = client
-        .search(SearchRequest { query: "ual231".to_string(), limit: 10 })
+        .search(SearchRequest { query: "ual231".to_string(), limit: 10, filter: None })
         .await
         .unwrap()
         .into_inner();

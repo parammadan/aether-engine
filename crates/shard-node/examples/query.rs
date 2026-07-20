@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut client = ShardSearchClient::new(common::net::channel(&addr).await?);
     let resp = client
-        .search(SearchRequest { query: query.clone(), limit })
+        .search(SearchRequest { query: query.clone(), limit, filter: None })
         .await?
         .into_inner();
 

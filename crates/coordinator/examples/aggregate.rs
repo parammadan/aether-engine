@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             field,
             interval,
             percentiles: vec![50.0, 90.0, 99.0],
+            filter: None,
         }))
         .await?
         .into_inner();

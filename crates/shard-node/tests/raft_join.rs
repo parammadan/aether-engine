@@ -92,7 +92,7 @@ async fn a_new_member_joins_a_live_group_and_catches_up_without_dropping_queries
         async move {
             loop {
                 if let Err(status) =
-                    client.search(SearchRequest { query: "synthetica".into(), limit: 3 }).await
+                    client.search(SearchRequest { query: "synthetica".into(), limit: 3, filter: None }).await
                 {
                     errors.lock().unwrap().push(status.to_string());
                 }
@@ -107,7 +107,7 @@ async fn a_new_member_joins_a_live_group_and_catches_up_without_dropping_queries
         let state = client.get_cluster_state(ClusterStateRequest {}).await.unwrap().into_inner();
         let has_leader = state.nodes.iter().any(|n| n.role == NodeRole::Leader as i32);
         let has_data = client
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched > 0)
             .unwrap_or(false);
@@ -135,7 +135,7 @@ async fn a_new_member_joins_a_live_group_and_catches_up_without_dropping_queries
     let mut first_seen = 0u64;
     for _ in 0..120 {
         let total = joiner
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);
@@ -151,7 +151,7 @@ async fn a_new_member_joins_a_live_group_and_catches_up_without_dropping_queries
     for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let total = joiner
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);

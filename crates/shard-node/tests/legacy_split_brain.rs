@@ -73,7 +73,7 @@ async fn routed_leader(coordinator: &str) -> Option<String> {
 async fn direct_count(member_addr: &str) -> Option<u64> {
     let mut c = ShardSearchClient::connect(format!("http://{member_addr}")).await.ok()?;
     let resp = c
-        .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
         .await
         .ok()?
         .into_inner();

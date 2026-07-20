@@ -112,7 +112,7 @@ async fn a_killed_member_recovers_from_its_wal_and_rejoins() {
         let mut client = client.clone();
         async move {
             loop {
-                match client.search(SearchRequest { query: "synthetica".into(), limit: 3 }).await {
+                match client.search(SearchRequest { query: "synthetica".into(), limit: 3, filter: None }).await {
                     Ok(resp) => *latest_total.lock().unwrap() = resp.into_inner().total_matched,
                     Err(status) => errors.lock().unwrap().push(status.to_string()),
                 }
@@ -169,7 +169,7 @@ async fn a_killed_member_recovers_from_its_wal_and_rejoins() {
     let mut recovered = 0u64;
     for _ in 0..120 {
         recovered = direct
-            .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+            .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
             .await
             .map(|r| r.into_inner().total_matched)
             .unwrap_or(0);

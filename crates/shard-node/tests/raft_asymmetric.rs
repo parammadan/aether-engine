@@ -69,7 +69,7 @@ async fn routed_leader(coordinator: &str) -> Option<String> {
 async fn direct_count(member_addr: &str) -> Option<u64> {
     let mut c = ShardSearchClient::connect(format!("http://{member_addr}")).await.ok()?;
     let resp = c
-        .search(SearchRequest { query: "synthetica".into(), limit: 1 })
+        .search(SearchRequest { query: "synthetica".into(), limit: 1, filter: None })
         .await
         .ok()?
         .into_inner();
@@ -126,7 +126,7 @@ async fn asymmetric_cut_keeps_committing_with_zero_query_errors_and_heals() {
             loop {
                 match CoordinatorClient::connect(format!("http://{coordinator}")).await {
                     Ok(mut c) => {
-                        if c.search(SearchRequest { query: "synthetica".into(), limit: 3 }).await.is_err() {
+                        if c.search(SearchRequest { query: "synthetica".into(), limit: 3, filter: None }).await.is_err() {
                             errors.fetch_add(1, Ordering::SeqCst);
                         }
                     }

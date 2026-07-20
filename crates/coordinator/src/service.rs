@@ -92,6 +92,9 @@ impl Coordinator for CoordinatorService {
     ) -> Result<Response<SearchResponse>, Status> {
         self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
+        }
         let limit = req.limit as usize;
 
         // Snapshot the leader addresses and release the lock BEFORE any await — we must not
@@ -188,6 +191,9 @@ impl Coordinator for CoordinatorService {
     ) -> Result<Response<SearchResponse>, Status> {
         self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
+        }
         let limit = req.limit as usize;
         let (leaders, placement_version) = {
             let registry = self
@@ -214,6 +220,9 @@ impl Coordinator for CoordinatorService {
     ) -> Result<Response<common::pb::AggregateResponse>, Status> {
         self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
+        }
         let kind = req.kind();
         let requested = req.percentiles.clone();
 
