@@ -65,7 +65,7 @@ fn now_ms() -> i64 {
 /// `field=min..max` (numeric range; either side may be empty), `field=true|false`
 /// (boolean). Returns None for an empty list.
 pub fn parse_filter_args(args: &[String]) -> Result<Option<crate::pb::Filter>, String> {
-    use crate::pb::{filter_condition::Test, Filter, FilterCondition, NumericRange};
+    use crate::pb::{filter_condition::Test, FilterCondition, NumericRange};
     let mut conditions = Vec::new();
     for arg in args {
         let (field, value) = arg

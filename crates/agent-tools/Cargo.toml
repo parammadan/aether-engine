@@ -1,0 +1,15 @@
+[package]
+name = "agent-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# THE read-only tool surface agents plan against — one definition shared by every agent
+# front-end (the MCP server, the natural-language service), so a tool added later exists
+# in all of them and none can drift. Structurally read-only: this crate links no mutating
+# RPC; the server's token scopes enforce the same boundary from the other side.
+
+[dependencies]
+common = { path = "../common" }
+tonic.workspace = true
+serde_json = "1"

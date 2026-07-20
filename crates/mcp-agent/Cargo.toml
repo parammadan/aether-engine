@@ -15,6 +15,7 @@ name = "aether-mcp"
 path = "src/main.rs"
 
 [dependencies]
+agent-tools = { path = "../agent-tools" }
 common = { path = "../common" }
 tokio.workspace = true
 tonic.workspace = true
