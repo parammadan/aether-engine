@@ -1,0 +1,13 @@
+[package]
+name = "memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Agent memory as a GOVERNED index type: a namespaced, TTL'd, writer-attributed,
+# quota'd, searchable store. The read-only rule for telemetry stays absolute; memory is
+# the one place agents may write, and its governance (isolation, quota, TTL, attribution)
+# is what makes that exception safe rather than a hole.
+
+[dependencies]
+common = { path = "../common" }

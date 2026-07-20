@@ -8,6 +8,7 @@ members = [
     "crates/coordinator",
     "crates/dashboard",
     "crates/mcp-agent",
+    "crates/memory",
     "crates/nlq",
     "crates/shard-node",
     "crates/testkit",
