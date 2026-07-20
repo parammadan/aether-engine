@@ -189,7 +189,7 @@ impl FlightSource for SyntheticSource {
 ///   altitude      = severity 0..127             — histograms / percentiles / filters
 ///   on_ground     = resolved flag
 ///
-/// LEARNING (ADR-0046): the engine's key is an UPSERT key — right for aircraft, where one
+/// Design note: the engine's key is an UPSERT key — right for aircraft, where one
 /// icao24 is one evolving entity re-observed over time. Security events are the opposite —
 /// immutable per-event records where one entity (a source IP) emits MANY events — so the
 /// document key must be the EVENT id (keying by entity would collapse the stream to one
