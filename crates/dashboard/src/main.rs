@@ -178,6 +178,10 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
         }
     });
     let mut prev_roles: HashMap<String, i32> = HashMap::new();
+    // Time-series ring buffer (last ~120 ticks): query latency, matched count, and errors
+    // over time. A node kill draws itself here — the latency blip and the recovery.
+    let mut series: std::collections::VecDeque<serde_json::Value> = std::collections::VecDeque::new();
+    let mut prev_err = 0u64;
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     loop {
         ticker.tick().await;
@@ -188,7 +192,12 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
         let mut vshard_group: Vec<u32> = Vec::new();
         let mut last_query = json!(null);
         let mut by_origin = json!([]);
+        let mut by_aircraft = json!([]);
+        let mut altitude_hist = json!([]);
+        let mut altitude_pcts = json!([]);
         let mut geo_cells = json!([]);
+        let mut last_ms = 0u64;
+        let mut last_matched = 0u64;
 
         if let Ok(mut client) = common::client::connect_first_healthy(&app.coordinator_addrs).await {
             // Cluster topology as the coordinator sees it.
@@ -228,6 +237,8 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 Ok(resp) => {
                     let r = resp.into_inner();
                     app.query_ok.fetch_add(1, Ordering::Relaxed);
+                    last_ms = t0.elapsed().as_millis() as u64;
+                    last_matched = r.total_matched;
                     // Surface the provenance manifest so the panel shows coverage, drops,
                     // freshness, and the placement version behind each live query.
                     let provenance = r.manifest.as_ref().map(|m| {
@@ -278,6 +289,41 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                         .into()
                 })
                 .unwrap_or_else(|| json!([]));
+
+            // Value-counts by aircraft type (categorical bars).
+            by_aircraft = run_agg(&mut client, common::pb::AggKind::AggValueCounts, "aircraft_type", 0.0, &[])
+                .await
+                .map(|(b, _)| bucket_rows(b, "aircraft_type", 8))
+                .unwrap_or_else(|| json!([]));
+
+            // Altitude distribution (2000 m buckets) + percentiles (the t-digest).
+            altitude_hist = run_agg(&mut client, common::pb::AggKind::AggNumericHistogram, "altitude", 2000.0, &[])
+                .await
+                .map(|(b, _)| {
+                    let mut rows: Vec<(f64, u64)> =
+                        b.into_iter().filter_map(|(k, v)| Some((k.parse::<f64>().ok()?, v))).collect();
+                    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    json!(rows.into_iter().map(|(k, v)| json!({ "bucket": k, "count": v })).collect::<Vec<_>>())
+                })
+                .unwrap_or_else(|| json!([]));
+            altitude_pcts = run_agg(&mut client, common::pb::AggKind::AggPercentiles, "altitude", 0.0, &[50.0, 90.0, 99.0])
+                .await
+                .map(|(_, pcts)| json!(pcts.into_iter().map(|p| json!({ "p": p.p, "value": p.value })).collect::<Vec<_>>()))
+                .unwrap_or_else(|| json!([]));
+        }
+
+        // Append this tick to the time-series (latency, matched, and whether an error
+        // occurred this tick — the node-kill signature is a latency blip + an error tick).
+        let err_now = app.query_err.load(Ordering::Relaxed);
+        series.push_back(json!({
+            "t": app.started.elapsed().as_secs(),
+            "ms": last_ms,
+            "matched": last_matched,
+            "errored": err_now > prev_err,
+        }));
+        prev_err = err_now;
+        while series.len() > 120 {
+            series.pop_front();
         }
 
         // The WebSocket snapshot contract (v1): every panel is a pure render of a slice of
@@ -293,7 +339,14 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
                 "err": app.query_err.load(Ordering::Relaxed),
                 "last": last_query,
             },
-            "aggregate": { "by_origin": by_origin, "geo_cells": geo_cells },
+            "aggregate": {
+                "by_origin": by_origin,
+                "by_aircraft": by_aircraft,
+                "geo_cells": geo_cells,
+                "altitude_hist": altitude_hist,
+                "altitude_pcts": altitude_pcts,
+            },
+            "series": series.iter().cloned().collect::<Vec<_>>(),
             "events": app.events.lock().unwrap().clone(),
         });
         let _ = state_tx.send(snapshot.to_string());

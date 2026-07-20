@@ -26,8 +26,20 @@
     </section>
 
     <section class="panel">
-      <h2>Flights by origin <span class="muted">(live aggregate)</span></h2>
-      <div class="bars" id="by-origin"><div class="muted">waiting…</div></div>
+      <h2>Flights by aircraft <span class="muted">(value-counts)</span></h2>
+      <div class="bars" id="by-aircraft"><div class="muted">waiting…</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Altitude <span class="muted">(percentiles · t-digest)</span></h2>
+      <div class="stats" id="alt-pcts"><div class="muted">waiting…</div></div>
+      <div class="bars" id="alt-hist" style="margin-top:10px"></div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Query latency <span class="muted">(a node kill draws its own blip &amp; recovery)</span></h2>
+      <svg id="series" viewBox="0 0 720 140" preserveAspectRatio="none" style="width:100%;height:140px;background:var(--surface-2);border-radius:6px"></svg>
+      <div class="prov muted" id="series-note"></div>
     </section>
 
     <section class="panel wide">

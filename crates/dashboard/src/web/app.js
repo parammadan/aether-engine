@@ -48,10 +48,43 @@ function render(snap) {
   }
 
   const agg = snap.aggregate || {};
-  renderByOrigin(agg.by_origin);
+  renderBars("by-aircraft", agg.by_aircraft, "aircraft_type");
+  renderAltitude(agg.altitude_pcts || [], agg.altitude_hist || []);
   renderGeo(agg.geo_cells || []);
+  renderSeries(snap.series || []);
   renderNodes(snap.nodes || []);
   renderEvents(snap.events || []);
+}
+
+// Altitude: percentile hero numbers (from the t-digest) + a distribution histogram.
+function renderAltitude(pcts, hist) {
+  const p = $("alt-pcts");
+  p.innerHTML = pcts.length
+    ? pcts.map((x) => `<div class="stat"><div class="num">${Math.round(x.value)}</div><div class="label">p${x.p} m</div></div>`).join("")
+    : '<div class="muted">no data</div>';
+  const rows = hist.map((h) => ({ k: `${Math.round(h.bucket)}–${Math.round(h.bucket + 2000)}m`, count: h.count }));
+  renderBarRows("alt-hist", rows);
+}
+
+// Time-series: query latency as a line, with error ticks marked. A node kill shows as a
+// latency spike + an error mark, then the line settling back — the failover as a picture.
+const SW = 720, SH = 140;
+function renderSeries(pts) {
+  const svg = $("series");
+  if (pts.length < 2) { svg.innerHTML = ""; $("series-note").textContent = "collecting…"; return; }
+  const maxMs = Math.max(10, ...pts.map((p) => p.ms));
+  const x = (i) => (i / (pts.length - 1)) * SW;
+  const y = (ms) => SH - (ms / maxMs) * (SH - 10) - 5;
+  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.ms).toFixed(1)}`).join(" ");
+  const errs = pts
+    .map((p, i) => (p.errored ? `<line x1="${x(i).toFixed(1)}" y1="0" x2="${x(i).toFixed(1)}" y2="${SH}" stroke="var(--critical)" stroke-width="1.5" opacity="0.7"/>` : ""))
+    .join("");
+  svg.innerHTML =
+    errs +
+    `<path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2"/>` +
+    `<text x="4" y="12">${maxMs}ms</text>`;
+  const errCount = pts.filter((p) => p.errored).length;
+  $("series-note").textContent = `${pts.length}s window · peak ${maxMs}ms` + (errCount ? ` · ${errCount} error ticks (failover)` : " · no errors");
 }
 
 // Geo-density: each aggregate cell is a 10° grid square, shaded on a single-hue sequential
@@ -119,13 +152,20 @@ function renderNodes(nodes) {
   });
 }
 
-function renderByOrigin(rows) {
-  const el = $("by-origin");
+// Value-counts bars from aggregate rows keyed by `keyName`.
+function renderBars(id, rows, keyName) {
+  renderBarRows(id, (rows || []).map((r) => ({ k: r[keyName], count: r.count })));
+}
+
+// Direct-labeled horizontal bars — identity is the text label, never color alone.
+function renderBarRows(id, rows) {
+  const el = $(id);
+  if (!el) return;
   if (!rows || rows.length === 0) { el.innerHTML = '<div class="muted">no data</div>'; return; }
   const max = Math.max(...rows.map((r) => r.count), 1);
   el.innerHTML = rows.map((r) =>
     `<div class="bar-row">
-       <span class="k" title="${esc(r.origin)}">${esc(r.origin)}</span>
+       <span class="k" title="${esc(r.k)}">${esc(r.k)}</span>
        <span class="track"><span class="fill" style="width:${(r.count / max) * 100}%"></span></span>
        <span class="v">${r.count}</span>
      </div>`
