@@ -1,0 +1,41 @@
+{
+  "description": "Graded NLQ question set. Each question is run through the live loop; the answer is graded by whether it CALLED the expected tool(s) and its text CONTAINS the expected substrings (case-insensitive). Deliberately behavioral, not exact-match: the model's prose varies, its tool plan should not. Run with the bedrock feature + AETHER_BEDROCK_MODEL; never in CI.",
+  "questions": [
+    {
+      "id": "count-all",
+      "ask": "how many flights are there right now?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
+      "id": "origins",
+      "ask": "which origin countries are flying?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
+      "id": "find-callsign",
+      "ask": "find the flight with callsign SYN0",
+      "expect_tools": ["search_flights"],
+      "expect_contains": ["SYN0"]
+    },
+    {
+      "id": "filtered-count",
+      "ask": "how many flights are below 3000 meters?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
+      "id": "altitude-percentiles",
+      "ask": "what are the p50 and p99 altitudes?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
+      "id": "cluster-health",
+      "ask": "is the cluster healthy? how many shards answered?",
+      "expect_tools": ["cluster_state"],
+      "expect_contains": []
+    }
+  ]
+}
