@@ -123,6 +123,61 @@ message VectorSearchRequest {
   uint32 limit = 2;          // max hits from THIS shard. 0 = server default.
 }
 
+// =============================================================================
+// Aggregation  (data plane)
+// =============================================================================
+// The engine can rank documents; aggregation lets it SUMMARIZE them — counts, histograms,
+// geo-density, percentiles — as distributed work: each shard computes a PARTIAL, the
+// coordinator MERGES partials. Every agg type here is chosen so its partial merges
+// associatively (per-bucket sums, or a mergeable sketch) — the mergeability doctrine.
+
+enum AggKind {
+  AGG_UNSPECIFIED = 0;
+  AGG_COUNT = 1;             // how many documents match
+  AGG_VALUE_COUNTS = 2;      // count per distinct value of a text field
+  AGG_TIME_HISTOGRAM = 3;    // count per fixed observed_at time-bucket (interval = ms)
+  AGG_NUMERIC_HISTOGRAM = 4; // count per fixed numeric bucket of `field` (interval = width)
+  AGG_GEO_GRID = 5;          // count per lat/lon grid cell (interval = cell size in degrees)
+  AGG_PERCENTILES = 6;       // percentiles of a numeric `field`, via a mergeable sketch
+}
+
+message AggregateRequest {
+  string query = 1;              // filter: keyword query over the text fields (empty = all)
+  AggKind kind = 2;
+  string field = 3;              // the field to aggregate (value-counts / numeric / percentiles)
+  double interval = 4;           // time bucket ms | numeric bucket width | geo cell degrees
+  repeated double percentiles = 5; // requested percentiles (e.g. 50, 95, 99) for AGG_PERCENTILES
+}
+
+// A mergeable t-digest: parallel arrays of centroid means and weights. Merging two digests
+// is concatenating their centroids and re-compressing — associative, so per-shard digests
+// combine at the coordinator into one the whole cluster's percentiles read from.
+message TDigest {
+  repeated double centroid_mean = 1;
+  repeated double centroid_weight = 2;
+}
+
+// A shard's partial aggregate (also the coordinator's merged result — same shape, because
+// merging is closed over this type). Counts and bucket maps merge by summing; the digest
+// merges by centroid union.
+message AggregatePartial {
+  AggKind kind = 1;
+  uint64 count = 2;                // AGG_COUNT: matching documents
+  map<string, uint64> buckets = 3; // value-counts / histograms / geo-grid: bucket key -> count
+  TDigest digest = 4;              // AGG_PERCENTILES
+}
+
+message Percentile {
+  double p = 1;     // the requested percentile (e.g. 99)
+  double value = 2; // its value across the merged data
+}
+
+message AggregateResponse {
+  AggregatePartial partial = 1;        // shard: its partial; coordinator: the merged partial
+  repeated Percentile percentiles = 2; // coordinator resolves these from the merged digest
+  QueryManifest manifest = 3;          // coverage etc. (absent on a single shard's reply)
+}
+
 // Served by every shard node.
 service ShardSearch {
   rpc Search(SearchRequest) returns (SearchResponse);
@@ -131,6 +186,10 @@ service ShardSearch {
   // so results from many shards can be merged by the same score-descending rule as keyword
   // search (SearchResponse is reused).
   rpc VectorSearch(VectorSearchRequest) returns (SearchResponse);
+
+  // Compute a PARTIAL aggregate over this shard's documents; the coordinator merges partials
+  // from every shard. One pass over the store, no per-document RPC amplification.
+  rpc Aggregate(AggregateRequest) returns (AggregateResponse);
 }
 
 // =============================================================================
