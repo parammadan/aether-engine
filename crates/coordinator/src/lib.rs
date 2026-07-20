@@ -8,5 +8,6 @@ pub mod agg;
 pub mod auth;
 pub mod control;
 pub mod fanout;
+pub mod hybrid;
 pub mod registry;
 pub mod service;

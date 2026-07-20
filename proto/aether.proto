@@ -371,6 +371,12 @@ service Coordinator {
   // partials, resolve percentiles, and report coverage in the manifest.
   rpc Aggregate(AggregateRequest) returns (AggregateResponse);
 
+  // Hybrid search: run BOTH keyword and vector search for the query text and fuse the two
+  // rankings by Reciprocal Rank Fusion (rank-based, so the incomparable BM25 and cosine
+  // score scales never meet). The coordinator embeds the query text itself. Same
+  // SearchRequest/SearchResponse contract; each hit's provenance says which index found it.
+  rpc HybridSearch(SearchRequest) returns (SearchResponse);
+
   // Followers of a shard, so a leader can discover where to replicate.
   rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse);
 

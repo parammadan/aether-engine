@@ -259,6 +259,73 @@ impl Coordinator for CoordinatorService {
         }))
     }
 
+    async fn hybrid_search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        self.auth.require(&request, crate::auth::Scope::Read)?;
+        let req = request.into_inner();
+        if let Some(f) = &req.filter {
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
+        }
+        let limit = req.limit as usize;
+
+        let (leaders, placement_version) = {
+            let registry = self
+                .registry
+                .read()
+                .map_err(|_| Status::internal("registry lock poisoned"))?;
+            (registry.leader_addresses(), registry.placement_version())
+        };
+        let shards_queried = leaders.len() as u32;
+        let started = std::time::Instant::now();
+
+        // Keyword fan-out and (coordinator-embedded) vector fan-out, concurrently.
+        use common::embed::{Embedder, HashEmbedder};
+        let vector = HashEmbedder.embed(&req.query);
+        let vreq = common::pb::VectorSearchRequest {
+            vector,
+            limit: req.limit,
+            filter: req.filter.clone(),
+        };
+        let (kw, vec_out) = tokio::join!(
+            crate::fanout::scatter_gather(leaders.clone(), req.clone()),
+            crate::fanout::scatter_gather_vector(leaders, vreq),
+        );
+
+        // Merge each modality's shard responses (ranked lists), then fuse by RRF.
+        let mut omitted = kw.omitted.clone();
+        omitted.extend(vec_out.omitted.clone());
+        let kw_merged =
+            crate::fanout::merge_search_responses(kw, 0, shards_queried, placement_version, 0);
+        let vec_merged =
+            crate::fanout::merge_search_responses(vec_out, 0, shards_queried, placement_version, 0);
+        let fused = crate::hybrid::rrf_fuse(kw_merged.hits, vec_merged.hits, limit);
+
+        // Coverage = shards that answered BOTH modalities (a shard missing from either
+        // rank is incomplete for fusion). Report the union of omissions honestly.
+        let answered = shards_queried.saturating_sub(
+            omitted.iter().map(|o| &o.address).collect::<std::collections::HashSet<_>>().len() as u32,
+        );
+        let manifest = crate::fanout::build_manifest(
+            &fused,
+            shards_queried,
+            answered,
+            omitted,
+            0,
+            placement_version,
+            started.elapsed().as_millis() as u64,
+        );
+        Ok(Response::new(SearchResponse {
+            total_matched: fused.len() as u64,
+            hits: fused,
+            shard_id: "coordinator".into(),
+            shards_queried,
+            shards_answered: answered,
+            manifest: Some(manifest),
+        }))
+    }
+
     async fn drain_node(
         &self,
         request: Request<DrainRequest>,
