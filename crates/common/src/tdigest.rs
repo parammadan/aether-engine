@@ -258,4 +258,60 @@ mod tests {
         assert!(d.quantile(0.5).is_nan());
         assert!(d.is_empty());
     }
+
+    /// Measured error table (run with: cargo test -p common tdigest_error -- --ignored
+    /// --nocapture). Prints relative error of merged-across-shards percentiles vs exact,
+    /// across uniform / normal / heavy-tailed distributions and shard counts — the
+    /// t-digest equivalent of the quantization recall measurement.
+    #[test]
+    #[ignore]
+    fn tdigest_error_table() {
+        fn lcg(seed: u64) -> impl FnMut() -> f64 {
+            let mut s = seed;
+            move || {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 11) as f64 / (1u64 << 53) as f64 // in [0,1)
+            }
+        }
+        fn exact(mut xs: Vec<f64>, p: f64) -> f64 {
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            xs[(((p / 100.0) * (xs.len() as f64 - 1.0)).round() as usize).min(xs.len() - 1)]
+        }
+
+        let n = 50_000;
+        for dist in ["uniform", "normal", "heavy-tailed"] {
+            let mut u = lcg(99);
+            let samples: Vec<f64> = (0..n)
+                .map(|_| match dist {
+                    "uniform" => u() * 1000.0,
+                    // Box-Muller-ish normal via sum of uniforms (CLT), mean 500 sd 100.
+                    "normal" => (0..12).map(|_| u()).sum::<f64>() / 12.0 * 1000.0,
+                    // Heavy tail: inverse of uniform (Pareto-like).
+                    _ => 1.0 / (u() + 1e-6),
+                })
+                .collect();
+            let spread = exact(samples.clone(), 99.0) - exact(samples.clone(), 1.0);
+
+            println!("\n== distribution: {dist} (n={n}, spread≈{spread:.1}) ==");
+            for &shards in &[1usize, 4, 16] {
+                let mut digests: Vec<TDigest> = (0..shards).map(|_| TDigest::new()).collect();
+                for (i, &x) in samples.iter().enumerate() {
+                    digests[i % shards].add(x);
+                }
+                let mut merged = TDigest::new();
+                for d in &digests {
+                    merged.merge(d);
+                }
+                let errs: Vec<String> = [50.0, 90.0, 99.0, 99.9]
+                    .iter()
+                    .map(|&p| {
+                        let approx = merged.quantile(p / 100.0);
+                        let e = exact(samples.clone(), p);
+                        format!("p{p}: {:.4}", (approx - e).abs() / spread.max(1.0))
+                    })
+                    .collect();
+                println!("  shards={shards:>2}  {}", errs.join("  "));
+            }
+        }
+    }
 }
