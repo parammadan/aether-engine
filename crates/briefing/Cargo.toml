@@ -1,0 +1,28 @@
+[package]
+name = "briefing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The capstone: a scheduled agent that reads the cluster in plain English (the NLQ loop
+# over the read-only tools) and composes a provenance-carrying briefing. Its ONE outward,
+# non-read-only action is an email hand-off — behind a recipient allowlist and a dry-run
+# default. Everything else stays read-only, structurally (no mutating RPC is linked).
+
+[[bin]]
+name = "aether-briefing"
+path = "src/main.rs"
+
+[dependencies]
+agent-tools = { path = "../agent-tools" }
+common = { path = "../common" }
+nlq = { path = "../nlq" }
+tokio = { workspace = true }
+serde_json = "1"
+async-trait = "0.1"
+
+[dev-dependencies]
+coordinator = { path = "../coordinator" }
+shard-node = { path = "../shard-node" }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic.workspace = true

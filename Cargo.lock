@@ -880,6 +880,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "briefing"
+version = "0.0.0"
+dependencies = [
+ "agent-tools",
+ "async-trait",
+ "common",
+ "coordinator",
+ "nlq",
+ "serde_json",
+ "shard-node",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
