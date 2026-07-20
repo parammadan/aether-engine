@@ -55,14 +55,17 @@ pub struct SearchResults<'a> {
 /// Without this, every poll would duplicate the whole fleet — duplicate hits in results and
 /// unbounded growth.
 pub struct InvertedIndex {
-    /// `docs[doc_id]` is the stored document. We store the generated `FlightDocument`
-    /// (the wire type) directly for now to avoid a premature parallel domain struct; if
-    /// storage and wire formats diverge later, introduce a domain type then.
-    docs: Vec<FlightDocument>,
+    /// `docs[doc_id]` is the stored document; `None` is a retired slot (its aircraft was
+    /// removed). Slots are retired rather than shifted because posting lists embed doc
+    /// ids — compacting would invalidate every posting. Retired slots go on the free list
+    /// and are reused by later inserts, so the vector doesn't leak under churn.
+    docs: Vec<Option<FlightDocument>>,
     /// `term -> postings`.
     postings: HashMap<String, Vec<Posting>>,
     /// `icao24 -> doc slot`, the upsert key.
     by_key: HashMap<String, DocId>,
+    /// Retired slots available for reuse.
+    free: Vec<DocId>,
 }
 
 impl InvertedIndex {
@@ -71,21 +74,22 @@ impl InvertedIndex {
             docs: Vec::new(),
             postings: HashMap::new(),
             by_key: HashMap::new(),
+            free: Vec::new(),
         }
     }
 
     /// Number of distinct documents (aircraft) indexed.
     pub fn len(&self) -> usize {
-        self.docs.len()
+        self.by_key.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.docs.is_empty()
+        self.by_key.is_empty()
     }
 
     /// All stored documents (for building snapshots of the shard's state).
     pub fn documents(&self) -> Vec<FlightDocument> {
-        self.docs.clone()
+        self.docs.iter().flatten().cloned().collect()
     }
 
     /// Per-term frequencies over the document's indexed text fields.
@@ -97,15 +101,6 @@ impl InvertedIndex {
             }
         }
         freqs
-    }
-
-    fn add_postings(&mut self, doc_id: DocId, doc: &FlightDocument) {
-        for (term, term_freq) in Self::term_freqs(doc) {
-            self.postings
-                .entry(term)
-                .or_default()
-                .push(Posting { doc_id, term_freq });
-        }
     }
 
     /// Remove `doc_id`'s postings for every term of `doc`. Cheap in practice: a flight
@@ -121,15 +116,17 @@ impl InvertedIndex {
         }
     }
 
-    /// Upsert one document by `icao24`: a new aircraft appends; a re-observed aircraft
-    /// replaces its stored document in place (old postings out, new postings in).
+    /// Upsert one document by `icao24`: a new aircraft takes a retired slot (or appends);
+    /// a re-observed aircraft replaces its stored document in place (old postings out,
+    /// new postings in).
     pub fn insert(&mut self, doc: FlightDocument) {
         if let Some(&doc_id) = self.by_key.get(&doc.icao24) {
-            let old = std::mem::replace(&mut self.docs[doc_id as usize], doc);
+            let old = std::mem::replace(&mut self.docs[doc_id as usize], Some(doc))
+                .expect("by_key never points at a retired slot");
             self.remove_postings(doc_id, &old);
             // Frequencies are computed up front so the immutable borrow of the stored doc
             // ends before we mutate the postings map.
-            let freqs = Self::term_freqs(&self.docs[doc_id as usize]);
+            let freqs = Self::term_freqs(self.docs[doc_id as usize].as_ref().unwrap());
             for (term, term_freq) in freqs {
                 self.postings
                     .entry(term)
@@ -139,10 +136,37 @@ impl InvertedIndex {
             return;
         }
 
-        let doc_id = self.docs.len() as DocId;
-        self.by_key.insert(doc.icao24.clone(), doc_id);
-        self.add_postings(doc_id, &doc);
-        self.docs.push(doc);
+        let freqs = Self::term_freqs(&doc);
+        let key = doc.icao24.clone();
+        let doc_id = match self.free.pop() {
+            Some(slot) => {
+                self.docs[slot as usize] = Some(doc);
+                slot
+            }
+            None => {
+                self.docs.push(Some(doc));
+                (self.docs.len() - 1) as DocId
+            }
+        };
+        self.by_key.insert(key, doc_id);
+        for (term, term_freq) in freqs {
+            self.postings.entry(term).or_default().push(Posting { doc_id, term_freq });
+        }
+    }
+
+    /// Remove one aircraft by `icao24`: its postings are deleted, its slot retired for
+    /// reuse. Returns whether it was present. After this, the document is unfindable by
+    /// any term and gone from `documents()` — a removal, not a tombstone.
+    pub fn remove(&mut self, icao24: &str) -> bool {
+        let Some(doc_id) = self.by_key.remove(icao24) else {
+            return false;
+        };
+        let doc = self.docs[doc_id as usize]
+            .take()
+            .expect("by_key never points at a retired slot");
+        self.remove_postings(doc_id, &doc);
+        self.free.push(doc_id);
+        true
     }
 
     /// Search the index. OR semantics: a document matches if it contains any query term.
@@ -172,7 +196,9 @@ impl InvertedIndex {
         let mut hits: Vec<ScoredHit<'_>> = scores
             .into_iter()
             .map(|(doc_id, score)| ScoredHit {
-                doc: &self.docs[doc_id as usize],
+                doc: self.docs[doc_id as usize]
+                    .as_ref()
+                    .expect("postings never reference a retired slot"),
                 score,
             })
             .collect();
@@ -285,6 +311,84 @@ mod tests {
         let r = idx.search("boeing", 1);
         assert_eq!(r.total_matched, 2); // both Boeings matched
         assert_eq!(r.hits.len(), 1); // but only one returned
+    }
+
+    #[test]
+    fn removed_aircraft_are_unfindable_and_slots_are_reused() {
+        let mut idx = sample();
+        assert!(idx.remove("a1"));
+        assert!(!idx.remove("a1"), "double remove is a no-op");
+
+        assert_eq!(idx.len(), 2);
+        assert_eq!(idx.search("ual231", 10).total_matched, 0, "removed text unfindable");
+        assert_eq!(idx.search("boeing", 10).total_matched, 1, "shared term keeps the survivor");
+        assert!(idx.documents().iter().all(|d| d.icao24 != "a1"), "gone from snapshots too");
+
+        // A new aircraft reuses the retired slot: the backing vector must not grow.
+        let before = idx.docs.len();
+        idx.insert(doc("d4", "SWA100", "DEN", "PHX", "Boeing 737"));
+        assert_eq!(idx.docs.len(), before, "retired slot reused, no growth");
+        assert_eq!(idx.search("swa100", 10).total_matched, 1);
+    }
+
+    /// The 8.1 property: an index after ARBITRARY insert/remove interleavings is
+    /// indistinguishable from a fresh build of the surviving set — same counts, same
+    /// results for every probe. Deterministic pseudo-random interleavings (seeded LCG),
+    /// several seeds.
+    #[test]
+    fn interleaved_inserts_and_removes_equal_a_fresh_build_of_survivors() {
+        for seed in [3u64, 17, 4242] {
+            let mut rng = seed;
+            let mut next = move || {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (rng >> 33) as usize
+            };
+
+            let keys: Vec<String> = (0..40).map(|i| format!("ac{i:02}")).collect();
+            let origins = ["SFO", "JFK", "ATL", "ORD", "DEN"];
+            let crafts = ["Boeing 737", "Airbus A320", "Boeing 777"];
+
+            let mut idx = InvertedIndex::new();
+            let mut surviving: std::collections::HashMap<String, FlightDocument> =
+                std::collections::HashMap::new();
+
+            for step in 0..400 {
+                let key = &keys[next() % keys.len()];
+                if next() % 3 == 0 {
+                    idx.remove(key);
+                    surviving.remove(key);
+                } else {
+                    let d = doc(
+                        key,
+                        &format!("FL{step}"),
+                        origins[next() % origins.len()],
+                        origins[next() % origins.len()],
+                        crafts[next() % crafts.len()],
+                    );
+                    surviving.insert(key.clone(), d.clone());
+                    idx.insert(d);
+                }
+            }
+
+            // Fresh build of exactly the survivors.
+            let mut fresh = InvertedIndex::new();
+            for d in surviving.values() {
+                fresh.insert(d.clone());
+            }
+
+            assert_eq!(idx.len(), fresh.len(), "seed {seed}: document counts diverged");
+            for probe in ["sfo", "jfk", "atl", "ord", "den", "boeing", "airbus", "737", "a320", "777"] {
+                let a = idx.search(probe, 0);
+                let b = fresh.search(probe, 0);
+                assert_eq!(a.total_matched, b.total_matched, "seed {seed}: '{probe}' counts diverged");
+                let ids = |r: &SearchResults| -> Vec<String> {
+                    let mut v: Vec<String> = r.hits.iter().map(|h| h.doc.icao24.clone()).collect();
+                    v.sort();
+                    v
+                };
+                assert_eq!(ids(&a), ids(&b), "seed {seed}: '{probe}' result sets diverged");
+            }
+        }
     }
 
     #[test]
