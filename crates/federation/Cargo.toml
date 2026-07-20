@@ -1,0 +1,19 @@
+[package]
+name = "federation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-cluster federation: one query across independent Aether clusters, merged with a
+# provenance-tagged, per-cluster coverage manifest. Scatter-gather one level up — each
+# cluster's coordinator is a "super-shard" — reusing the coordinator's own merge/dedup.
+
+[dependencies]
+common = { path = "../common" }
+coordinator = { path = "../coordinator" }
+tokio = { workspace = true }
+tonic.workspace = true
+
+[dev-dependencies]
+shard-node = { path = "../shard-node" }
+tokio-stream = { version = "0.1", features = ["net"] }
