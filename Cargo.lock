@@ -1109,6 +1109,7 @@ dependencies = [
  "openraft",
  "prost",
  "serde",
+ "shard-node",
  "tempfile",
  "tokio",
  "tokio-stream",

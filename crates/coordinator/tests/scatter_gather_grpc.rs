@@ -42,11 +42,12 @@ fn hit(icao24: &str, score: f64) -> SearchHit {
     SearchHit {
         document: Some(FlightDocument { icao24: icao24.to_string(), ..Default::default() }),
         score,
+        provenance: None,
     }
 }
 
 fn shard_reply(shard_id: &str, total: u64, hits: Vec<SearchHit>) -> SearchResponse {
-    SearchResponse { hits, total_matched: total, shard_id: shard_id.to_string(), shards_queried: 0, shards_answered: 0 }
+    SearchResponse { hits, total_matched: total, shard_id: shard_id.to_string(), shards_queried: 0, shards_answered: 0, manifest: None }
 }
 
 async fn spawn_on_ephemeral<F>(make: F) -> String

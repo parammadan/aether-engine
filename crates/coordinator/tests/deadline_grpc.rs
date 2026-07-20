@@ -30,11 +30,13 @@ fn one_hit(icao24: &str) -> SearchResponse {
         hits: vec![SearchHit {
             document: Some(FlightDocument { icao24: icao24.to_string(), ..Default::default() }),
             score: 1.0,
+            provenance: None,
         }],
         total_matched: 1,
         shard_id: "stub".to_string(),
         shards_queried: 0,
         shards_answered: 0,
+        manifest: None,
     }
 }
 

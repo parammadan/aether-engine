@@ -22,3 +22,6 @@ tokio-stream = { version = "0.1", features = ["net", "sync"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Real shard search services (not stubs) in the provenance test, so hits carry
+# provenance the shard actually built. Dev-only; the shipped coordinator never links it.
+shard-node = { path = "../shard-node" }
