@@ -36,6 +36,13 @@ impl ShardSearch for StubShard {
     ) -> Result<Response<SearchResponse>, Status> {
         Ok(Response::new(self.response.clone()))
     }
+
+    async fn aggregate(
+        &self,
+        _request: Request<common::pb::AggregateRequest>,
+    ) -> Result<Response<common::pb::AggregateResponse>, Status> {
+        Ok(Response::new(common::pb::AggregateResponse::default()))
+    }
 }
 
 fn hit(icao24: &str, score: f64) -> SearchHit {

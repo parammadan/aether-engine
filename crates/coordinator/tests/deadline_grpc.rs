@@ -51,6 +51,12 @@ impl ShardSearch for FastShard {
     ) -> Result<Response<SearchResponse>, Status> {
         Ok(Response::new(one_hit("fast")))
     }
+    async fn aggregate(
+        &self,
+        _r: Request<common::pb::AggregateRequest>,
+    ) -> Result<Response<common::pb::AggregateResponse>, Status> {
+        Ok(Response::new(common::pb::AggregateResponse::default()))
+    }
 }
 
 #[tonic::async_trait]
@@ -65,6 +71,13 @@ impl ShardSearch for SlowShard {
     ) -> Result<Response<SearchResponse>, Status> {
         tokio::time::sleep(Duration::from_secs(10)).await;
         Ok(Response::new(one_hit("slow")))
+    }
+    async fn aggregate(
+        &self,
+        _r: Request<common::pb::AggregateRequest>,
+    ) -> Result<Response<common::pb::AggregateResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Ok(Response::new(common::pb::AggregateResponse::default()))
     }
 }
 
