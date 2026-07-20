@@ -124,6 +124,46 @@ fn every_simple_agg_is_sharding_invariant() {
 }
 
 #[test]
+fn filtered_aggregation_is_still_sharding_invariant() {
+    // The same invariance must hold when a filter runs before aggregation — the filter is
+    // applied per shard (as the server does), and filtered-sharded-merged must equal
+    // filtered-single-node.
+    use common::pb::filter_condition::Test;
+    let docs = corpus(2000, 42);
+    let filter = common::pb::Filter {
+        conditions: vec![
+            common::pb::FilterCondition {
+                field: "origin".into(),
+                test: Some(Test::Equals("sfo".into())),
+            },
+            common::pb::FilterCondition {
+                field: "altitude".into(),
+                test: Some(Test::Range(common::pb::NumericRange { min: Some(2000.0), max: Some(9000.0) })),
+            },
+        ],
+    };
+    let request = req(AggKind::AggValueCounts, "aircraft_type", 0.0);
+
+    fn filtered<'a>(slice: &'a [FlightDocument], f: &common::pb::Filter) -> Vec<&'a FlightDocument> {
+        slice.iter().filter(|d| common::filter::passes(d, Some(f))).collect()
+    }
+
+    for &shards in &[2usize, 5] {
+        let parts: Vec<_> = shard_it(&docs, shards, 0)
+            .iter()
+            .map(|slice| partial(&filtered(slice, &filter), &request))
+            .collect();
+        let (merged, _) = merge_partials(AggKind::AggValueCounts, parts, &[]);
+
+        let single = partial(&filtered(&docs, &filter), &request);
+        assert_eq!(merged.count, single.count, "filtered counts diverged (shards={shards})");
+        let m: BTreeMap<_, _> = merged.buckets.into_iter().collect();
+        let s: BTreeMap<_, _> = single.buckets.into_iter().collect();
+        assert_eq!(m, s, "filtered buckets diverged (shards={shards})");
+    }
+}
+
+#[test]
 fn percentiles_from_merged_shards_track_the_single_node_digest() {
     // Percentiles can't be summed, so this is the sketch's proof: the merged-across-shards
     // percentile is close to the single-node percentile (and to exact) regardless of how
