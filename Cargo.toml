@@ -7,6 +7,7 @@ members = [
     "crates/coordinator",
     "crates/dashboard",
     "crates/mcp-agent",
+    "crates/nlq",
     "crates/shard-node",
     "crates/testkit",
 ]
