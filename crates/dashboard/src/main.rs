@@ -108,6 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let router = Router::new()
         .route("/", get(index))
+        .route("/app.js", get(app_js))
+        .route("/styles.css", get(styles_css))
         .route("/ws", get(ws_upgrade))
         .route("/api/state", get(api_state))
         .route("/api/kill/:node_id", post(api_kill))
@@ -246,7 +248,10 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
             }
         }
 
+        // The WebSocket snapshot contract (v1): every panel is a pure render of a slice of
+        // this. Bump `v` on a breaking shape change; the SPA reads it for compatibility.
         let snapshot = json!({
+            "v": 1,
             "shard_count": shard_count,
             "vshard_group": vshard_group,
             "coordinator": { "addr": app.supervisor.coordinator_addr, "reachable": coordinator_reachable },
@@ -264,7 +269,15 @@ async fn poller(app: Arc<App>, state_tx: tokio::sync::watch::Sender<String>) {
 }
 
 async fn index() -> Html<&'static str> {
-    Html(include_str!("index.html"))
+    Html(include_str!("web/index.html"))
+}
+
+async fn app_js() -> impl IntoResponse {
+    ([("content-type", "text/javascript; charset=utf-8")], include_str!("web/app.js"))
+}
+
+async fn styles_css() -> impl IntoResponse {
+    ([("content-type", "text/css; charset=utf-8")], include_str!("web/styles.css"))
 }
 
 async fn api_state(State(app): State<Arc<App>>) -> impl IntoResponse {

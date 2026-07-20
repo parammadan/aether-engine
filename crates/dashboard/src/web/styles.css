@@ -1,0 +1,112 @@
+/* Aether Dashboards — dark theme. Colors are the validated dataviz palette (categorical
+   slots + status roles) run through the palette validator, not eyeballed. Status is never
+   color-alone: every status dot ships with a text label. */
+
+:root {
+  --surface-0: #0f0f0e;   /* page */
+  --surface-1: #1a1a19;   /* panel (the validated chart surface) */
+  --surface-2: #242422;   /* raised */
+  --border:    #34332f;
+  --text-1:    #ffffff;
+  --text-2:    #c3c2b7;
+  --text-3:    #8a897f;
+
+  /* categorical (dark), validated adjacent-pair separation */
+  --series-1: #3987e5;
+  --series-2: #008300;
+  --series-3: #d55181;
+  --series-4: #c98500;
+  --series-5: #199e70;
+  --series-6: #d95926;
+
+  /* status roles (fixed, never themed) */
+  --good:     #0ca30c;
+  --warning:  #fab219;
+  --serious:  #ec835a;
+  --critical: #d03b3b;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-1);
+  font-family: var(--sans);
+  font-size: 14px;
+}
+
+header {
+  display: flex; align-items: center; gap: 20px;
+  padding: 12px 20px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+header .conn { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 13px; }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.good { background: var(--good); }
+.dot.warning { background: var(--warning); }
+.dot.serious { background: var(--serious); }
+.dot.critical { background: var(--critical); }
+.dot.neutral { background: var(--series-1); }
+
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  padding: 16px 20px;
+}
+.panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin: 0 0 10px; }
+.panel.wide { grid-column: 1 / -1; }
+
+/* stat tiles (hero numbers) */
+.stats { display: flex; gap: 28px; }
+.stat .num { font-family: var(--mono); font-size: 28px; font-weight: 600; }
+.stat .num.err { color: var(--critical); }
+.stat .label { color: var(--text-3); font-size: 12px; }
+
+/* node health tiles, grouped by shard */
+.shard { margin-bottom: 12px; }
+.shard .shard-label { color: var(--text-3); font-size: 11px; margin-bottom: 6px; }
+.tiles { display: flex; flex-wrap: wrap; gap: 8px; }
+.tile {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; min-width: 150px;
+}
+.tile .id { font-family: var(--mono); font-size: 13px; }
+.tile .role { color: var(--text-2); font-size: 11px; margin-left: auto; }
+.tile button {
+  background: none; border: 1px solid var(--border); color: var(--text-2);
+  border-radius: 4px; font-size: 11px; padding: 2px 7px; cursor: pointer;
+}
+.tile button:hover { border-color: var(--critical); color: var(--critical); }
+
+/* provenance line */
+.prov { font-family: var(--mono); font-size: 11px; color: var(--text-3); margin-top: 8px; }
+
+/* event log */
+.events { font-family: var(--mono); font-size: 12px; max-height: 200px; overflow-y: auto; }
+.events .ev { padding: 2px 0; color: var(--text-2); border-bottom: 1px solid var(--surface-2); }
+.events .ev .t { color: var(--text-3); margin-right: 8px; }
+
+/* simple horizontal bars for value-counts (direct-labeled, so identity is never color-alone) */
+.bars { display: flex; flex-direction: column; gap: 6px; }
+.bar-row { display: flex; align-items: center; gap: 8px; }
+.bar-row .k { width: 120px; font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-row .track { flex: 1; background: var(--surface-2); border-radius: 4px; height: 16px; overflow: hidden; }
+.bar-row .fill { height: 100%; background: var(--series-1); border-radius: 4px; }
+.bar-row .v { font-family: var(--mono); font-size: 12px; width: 44px; text-align: right; color: var(--text-1); }
+
+svg text { fill: var(--text-2); font-family: var(--mono); font-size: 10px; }
+.muted { color: var(--text-3); }

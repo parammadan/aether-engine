@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aether Dashboards</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Aether</h1>
+    <span class="conn"><span id="conn-dot" class="dot critical"></span><span id="conn-text">connecting…</span></span>
+    <span class="conn muted" id="placement"></span>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Query throughput</h2>
+      <div class="stats">
+        <div class="stat"><div class="num" id="q-ok">0</div><div class="label">ok</div></div>
+        <div class="stat"><div class="num err" id="q-err">0</div><div class="label">errors</div></div>
+        <div class="stat"><div class="num" id="q-matched">0</div><div class="label">matched (last)</div></div>
+        <div class="stat"><div class="num" id="q-ms">0</div><div class="label">ms (last)</div></div>
+      </div>
+      <div class="prov" id="q-prov"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Flights by origin <span class="muted">(live aggregate)</span></h2>
+      <div class="bars" id="by-origin"><div class="muted">waiting…</div></div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Nodes <span class="muted">by shard</span></h2>
+      <div id="nodes"><div class="muted">waiting…</div></div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Events</h2>
+      <div class="events" id="events"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
