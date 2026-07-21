@@ -302,16 +302,95 @@ impl FlightSource for HttpSource {
         }
         let resp = self.client.get(&self.url).send().await?.error_for_status()?;
         let v: serde_json::Value = resp.json().await?;
-        let records = match v {
-            serde_json::Value::Array(a) => a,
-            obj @ serde_json::Value::Object(_) => vec![obj],
-            _ => return Err("HTTP source expects a JSON array or object".into()),
-        };
-        Ok(records
-            .iter()
-            .enumerate()
-            .map(|(i, rec)| record_to_doc(rec, &self.id_field, &self.id_prefix, i))
-            .collect())
+        Ok(json_to_docs(&v, &self.id_field, &self.id_prefix))
+    }
+}
+
+/// Parse a JSON value (array of objects, or a single object) into generic documents.
+fn json_to_docs(v: &serde_json::Value, id_field: &str, id_prefix: &str) -> Vec<FlightDocument> {
+    let records: Vec<&serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a.iter().collect(),
+        obj @ serde_json::Value::Object(_) => vec![obj],
+        _ => vec![],
+    };
+    records
+        .iter()
+        .enumerate()
+        .map(|(i, rec)| record_to_doc(rec, id_field, id_prefix, i))
+        .collect()
+}
+
+/// An S3 ingest connector — index JSON objects from an S3 bucket (a data-lake source). Lists
+/// objects under a prefix and maps each object's JSON records onto generic fields, exactly
+/// like the HTTP connector. Works against real S3 or any S3-compatible store (MinIO,
+/// LocalStack) via `AETHER_S3_ENDPOINT` — so it's testable with no real AWS account.
+///
+/// Env: `AETHER_S3_INGEST_BUCKET` (required), `AETHER_S3_INGEST_PREFIX` (default ""),
+/// `AETHER_S3_ENDPOINT` (optional, for MinIO/LocalStack), `AETHER_HTTP_ID_FIELD` (default
+/// "id"), plus the standard AWS region/credentials env.
+pub struct S3Source {
+    client: aws_sdk_s3::Client,
+    bucket: String,
+    prefix: String,
+    id_field: String,
+}
+
+impl S3Source {
+    pub async fn from_env() -> Self {
+        let bucket = std::env::var("AETHER_S3_INGEST_BUCKET").unwrap_or_default();
+        let prefix = std::env::var("AETHER_S3_INGEST_PREFIX").unwrap_or_default();
+        let id_field = std::env::var("AETHER_HTTP_ID_FIELD").unwrap_or_else(|_| "id".to_string());
+        let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region));
+        let endpoint = std::env::var("AETHER_S3_ENDPOINT").ok();
+        if let Some(ep) = &endpoint {
+            loader = loader.endpoint_url(ep);
+        }
+        let shared = loader.load().await;
+        let mut builder = aws_sdk_s3::config::Builder::from(&shared);
+        if endpoint.is_some() {
+            builder = builder.force_path_style(true); // MinIO/LocalStack serve by path
+        }
+        Self { client: aws_sdk_s3::Client::from_conf(builder.build()), bucket, prefix, id_field }
+    }
+}
+
+#[async_trait]
+impl FlightSource for S3Source {
+    async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
+        if self.bucket.is_empty() {
+            return Err("AETHER_S3_INGEST_BUCKET is not set".into());
+        }
+        let listing = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&self.prefix)
+            .send()
+            .await
+            .map_err(|e| format!("s3 list: {e}"))?;
+
+        let mut docs = Vec::new();
+        for obj in listing.contents() {
+            let Some(key) = obj.key() else { continue };
+            let got = self
+                .client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .send()
+                .await
+                .map_err(|e| format!("s3 get {key}: {e}"))?;
+            let bytes = got.body.collect().await.map_err(|e| format!("s3 body {key}: {e}"))?.into_bytes();
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue; // skip non-JSON objects
+            };
+            // Namespace ids by the object key so records from different objects never collide.
+            let id_prefix = format!("s3:{key}");
+            docs.extend(json_to_docs(&v, &self.id_field, &id_prefix));
+        }
+        Ok(docs)
     }
 }
 
@@ -498,6 +577,19 @@ mod tests {
         assert!(!doc.text.contains_key("nested"), "nested objects are skipped (flat model)");
         // The flight-specific columns stay empty — this is a generic document.
         assert!(doc.origin.is_empty() && doc.callsign.is_empty());
+    }
+
+    #[test]
+    fn json_to_docs_handles_array_and_single_object() {
+        // Both the HTTP and S3 connectors funnel through json_to_docs. An array yields one
+        // doc per element; a lone object yields one doc; anything else yields none.
+        let arr = json!([{"id": "a", "name": "x"}, {"id": "b", "name": "y"}]);
+        assert_eq!(json_to_docs(&arr, "id", "http").len(), 2);
+        let obj = json!({"id": "solo", "name": "z"});
+        let docs = json_to_docs(&obj, "id", "s3:file.json");
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].icao24, "s3:file.json-solo", "object-key-namespaced id");
+        assert!(json_to_docs(&json!(42), "id", "http").is_empty(), "scalars yield no docs");
     }
 
     #[test]

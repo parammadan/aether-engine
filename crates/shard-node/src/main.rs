@@ -64,7 +64,7 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 /// The flight source: live OpenSky by default, or a deterministic synthetic feed
 /// (`AETHER_SOURCE=synthetic`) for offline demos and tests. The synthetic seed is derived
 /// from the node id so two producers can never fabricate colliding aircraft.
-fn build_source(node_id: &str) -> Box<dyn FlightSource> {
+async fn build_source(node_id: &str) -> Box<dyn FlightSource> {
     let seed = common::shard::fnv1a_64(node_id.as_bytes()) as u32;
     match std::env::var("AETHER_SOURCE").as_deref() {
         Ok("synthetic") => Box::new(SyntheticSource::new(seed, 5)),
@@ -73,6 +73,7 @@ fn build_source(node_id: &str) -> Box<dyn FlightSource> {
         Ok("security") => Box::new(shard_node::ingest::SecuritySource::new(seed, 5)),
         // Generic connectors — "ingests from anywhere", mapping records onto generic fields.
         Ok("http") => Box::new(shard_node::ingest::HttpSource::from_env()),
+        Ok("s3") => Box::new(shard_node::ingest::S3Source::from_env().await),
         _ => Box::new(OpenSkySource::from_env()),
     }
 }
@@ -272,7 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             if ingest_on {
                 tokio::spawn(run_leader_ingestion(
-                    build_source(&node_id),
+                    build_source(&node_id).await,
                     raft.clone(),
                     my_id,
                     Duration::from_secs(poll_secs),
@@ -292,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None
             };
             let ingest_index = index.clone();
-            let source = build_source(&node_id);
+            let source = build_source(&node_id).await;
             tokio::spawn(async move {
                 run_ingestion(
                     source,

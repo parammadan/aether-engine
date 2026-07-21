@@ -18,6 +18,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
+# S3 ingest connector (reuses the AWS SDK already in the workspace via consensus).
+aws-config = "1.9.0"
+aws-sdk-s3 = "1.138.1"
 # Approximate nearest-neighbour index (pure Rust HNSW) for semantic search.
 hnsw_rs = "0.3"
 openraft = { version = "0.9.24", features = ["serde", "storage-v2"] }

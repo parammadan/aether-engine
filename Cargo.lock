@@ -3964,6 +3964,8 @@ name = "shard-node"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
  "common",
  "consensus",
  "coordinator",
