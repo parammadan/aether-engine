@@ -71,6 +71,8 @@ fn build_source(node_id: &str) -> Box<dyn FlightSource> {
         // SIEM generality proof: security events behind the SAME source trait, no new
         // distributed machinery downstream.
         Ok("security") => Box::new(shard_node::ingest::SecuritySource::new(seed, 5)),
+        // Generic connectors — "ingests from anywhere", mapping records onto generic fields.
+        Ok("http") => Box::new(shard_node::ingest::HttpSource::from_env()),
         _ => Box::new(OpenSkySource::from_env()),
     }
 }

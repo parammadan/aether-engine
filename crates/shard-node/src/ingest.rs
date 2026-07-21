@@ -232,6 +232,89 @@ impl FlightSource for SecuritySource {
     }
 }
 
+/// A GENERIC HTTP/REST connector — the first "ingests from anywhere" source. Polls a URL
+/// returning JSON (an array of objects, or a single object) and maps each record onto a
+/// GENERIC document: string values become keyword-searchable `text` fields, numeric values
+/// become aggregatable `number` fields, and the id comes from a configured field (else the
+/// record index). Nothing is disguised as a flight — the record's own field names are kept,
+/// and every downstream capability (search, filter, aggregate, provenance) addresses them.
+///
+/// Env: `AETHER_HTTP_URL` (required), `AETHER_HTTP_ID_FIELD` (default "id"),
+/// `AETHER_HTTP_ID_PREFIX` (namespaces ids so this connector's docs never collide with
+/// another source's; default "http").
+pub struct HttpSource {
+    client: reqwest::Client,
+    url: String,
+    id_field: String,
+    id_prefix: String,
+}
+
+impl HttpSource {
+    pub fn from_env() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            url: std::env::var("AETHER_HTTP_URL").unwrap_or_default(),
+            id_field: std::env::var("AETHER_HTTP_ID_FIELD").unwrap_or_else(|_| "id".to_string()),
+            id_prefix: std::env::var("AETHER_HTTP_ID_PREFIX").unwrap_or_else(|_| "http".to_string()),
+        }
+    }
+}
+
+/// Map one flat JSON object onto a generic document: strings → `text`, numbers → `number`,
+/// bools → `text` ("true"/"false"). Nested objects/arrays and nulls are skipped (a flat
+/// record model, documented). The id is `<prefix>-<id_field value>` or `<prefix>-<index>`.
+fn record_to_doc(rec: &serde_json::Value, id_field: &str, id_prefix: &str, idx: usize) -> FlightDocument {
+    let mut doc = FlightDocument::default();
+    let id = rec
+        .get(id_field)
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_else(|| idx.to_string());
+    doc.icao24 = format!("{id_prefix}-{id}");
+    if let Some(obj) = rec.as_object() {
+        for (k, val) in obj {
+            match val {
+                serde_json::Value::String(s) => {
+                    doc.text.insert(k.clone(), s.clone());
+                }
+                serde_json::Value::Number(n) => {
+                    if let Some(f) = n.as_f64() {
+                        doc.number.insert(k.clone(), f);
+                    }
+                }
+                serde_json::Value::Bool(b) => {
+                    doc.text.insert(k.clone(), b.to_string());
+                }
+                _ => {} // nested/null skipped — flat record model
+            }
+        }
+    }
+    doc
+}
+
+#[async_trait]
+impl FlightSource for HttpSource {
+    async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
+        if self.url.is_empty() {
+            return Err("AETHER_HTTP_URL is not set".into());
+        }
+        let resp = self.client.get(&self.url).send().await?.error_for_status()?;
+        let v: serde_json::Value = resp.json().await?;
+        let records = match v {
+            serde_json::Value::Array(a) => a,
+            obj @ serde_json::Value::Object(_) => vec![obj],
+            _ => return Err("HTTP source expects a JSON array or object".into()),
+        };
+        Ok(records
+            .iter()
+            .enumerate()
+            .map(|(i, rec)| record_to_doc(rec, &self.id_field, &self.id_prefix, i))
+            .collect())
+    }
+}
+
 /// Run the ingestion loop: poll `source` every `poll_interval`, inserting each snapshot into
 /// `index`, keeping only the documents this node owns per `ownership` (everything, a fixed
 /// `hash % N` slice, or a live virtual-shard mapping).
@@ -385,6 +468,7 @@ fn map_state(s: &[serde_json::Value]) -> Option<FlightDocument> {
         vertical_rate: f64_at(11),
         on_ground: s.get(8).and_then(|v| v.as_bool()).unwrap_or(false),
         tenant_id: String::new(),
+        ..Default::default()
     })
 }
 
@@ -392,6 +476,29 @@ fn map_state(s: &[serde_json::Value]) -> Option<FlightDocument> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn http_connector_maps_records_onto_generic_fields() {
+        // A non-flight record maps onto GENERIC fields by its own names: strings → text,
+        // numbers → number, id namespaced — nothing disguised as a flight.
+        let rec = json!({
+            "id": "T1",
+            "subject": "cannot login",
+            "priority": "high",
+            "response_time_ms": 320,
+            "resolved": false,
+            "nested": {"ignored": 1}
+        });
+        let doc = record_to_doc(&rec, "id", "http", 0);
+        assert_eq!(doc.icao24, "http-T1", "id is namespaced by the connector prefix");
+        assert_eq!(doc.text.get("subject").map(String::as_str), Some("cannot login"));
+        assert_eq!(doc.text.get("priority").map(String::as_str), Some("high"));
+        assert_eq!(doc.number.get("response_time_ms").copied(), Some(320.0));
+        assert_eq!(doc.text.get("resolved").map(String::as_str), Some("false"), "bool → text");
+        assert!(!doc.text.contains_key("nested"), "nested objects are skipped (flat model)");
+        // The flight-specific columns stay empty — this is a generic document.
+        assert!(doc.origin.is_empty() && doc.callsign.is_empty());
+    }
 
     #[test]
     fn map_state_maps_positional_fields() {

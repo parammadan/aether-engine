@@ -35,6 +35,15 @@ message FlightDocument {
   double vertical_rate = 12;
   bool on_ground = 13;
   string tenant_id = 14;   // multi-tenancy handle; carried now, enforced later.
+
+  // --- Generic fields (the platform model) ---
+  // Arbitrary, connector-supplied fields so a document is not tied to the flight schema:
+  // `text` fields are keyword-searchable and embeddable; `number` fields support ranges,
+  // histograms and percentiles. Aggregations and filters address these by name exactly as
+  // they do the built-in columns. Flight sources will migrate onto these, after which the
+  // named columns above are retired — leaving a generic Document (id + text + number + geo + ts).
+  map<string, string> text = 15;
+  map<string, double> number = 16;
 }
 
 // =============================================================================
