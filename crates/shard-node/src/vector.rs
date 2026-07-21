@@ -124,9 +124,15 @@ impl VectorIndex {
         self.by_key.is_empty()
     }
 
-    /// The text a document is embedded from: the same fields the keyword index covers.
+    /// The text a document is embedded from: the same fields the keyword index covers,
+    /// including any generic connector-supplied text fields.
     fn embeddable_text(doc: &FlightDocument) -> String {
-        format!("{} {} {} {}", doc.callsign, doc.origin, doc.destination, doc.aircraft_type)
+        let mut text = format!("{} {} {} {}", doc.callsign, doc.origin, doc.destination, doc.aircraft_type);
+        for value in doc.text.values() {
+            text.push(' ');
+            text.push_str(value);
+        }
+        text
     }
 
     /// Upsert one document by `icao24` (see the type-level docs for the strategy).

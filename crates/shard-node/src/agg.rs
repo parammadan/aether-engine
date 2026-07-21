@@ -15,7 +15,8 @@ fn text_field<'a>(doc: &'a FlightDocument, field: &str) -> Option<&'a str> {
         "destination" => Some(&doc.destination),
         "aircraft_type" => Some(&doc.aircraft_type),
         "tenant_id" => Some(&doc.tenant_id),
-        _ => None,
+        // Generic connector-supplied text field.
+        _ => doc.text.get(field).map(String::as_str),
     }
 }
 
@@ -29,7 +30,8 @@ fn numeric_field(doc: &FlightDocument, field: &str) -> Option<f64> {
         "latitude" => Some(doc.latitude),
         "longitude" => Some(doc.longitude),
         "observed_at" => Some(doc.observed_at as f64),
-        _ => None,
+        // Generic connector-supplied numeric field.
+        _ => doc.number.get(field).copied(),
     }
 }
 

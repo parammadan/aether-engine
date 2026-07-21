@@ -124,6 +124,12 @@ impl InvertedIndex {
                 *freqs.entry(token).or_insert(0) += 1;
             }
         }
+        // Generic connector-supplied text fields are keyword-indexed the same way.
+        for value in doc.text.values() {
+            for token in tokenize(value) {
+                *freqs.entry(token).or_insert(0) += 1;
+            }
+        }
         freqs
     }
 

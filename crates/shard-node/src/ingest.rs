@@ -385,6 +385,7 @@ fn map_state(s: &[serde_json::Value]) -> Option<FlightDocument> {
         vertical_rate: f64_at(11),
         on_ground: s.get(8).and_then(|v| v.as_bool()).unwrap_or(false),
         tenant_id: String::new(),
+        ..Default::default()
     })
 }
 
