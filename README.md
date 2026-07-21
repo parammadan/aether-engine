@@ -7,6 +7,31 @@ which replicates to a follower so the cluster keeps serving when a node dies. It
 live flight telemetry from the [OpenSky Network](https://opensky-network.org/) as its
 document source.
 
+## See it run
+
+The fastest way to experience Aether is the **live dashboard + chaos harness** — one command
+spins up a whole cluster (coordinator + a leader and follower per shard) as real processes
+and serves an interactive UI:
+
+```bash
+cargo run -p dashboard        # → http://127.0.0.1:8080
+```
+
+In the browser you get live per-shard health, a continuous query stream's throughput and
+coverage, altitude/aircraft panels, and a natural-language search bar. The demo that lands:
+click **kill −9** on a shard leader — watch coverage drop to partial, the follower get
+promoted (~6 s), and coverage return, with **zero failed queries**. **Add follower** spawns a
+fresh node that registers and catches up from replication. Prometheus metrics are live at
+`:9090/metrics` the whole time.
+
+Other one-command showcases:
+
+```bash
+./scripts/live-eval-local.sh   # a local LLM answers plain-English questions over the cluster (10/10)
+./scripts/bench.sh             # throughput/latency scaling table (1/2/4 shards)
+docker compose up --build      # the same cluster as containers, peers addressed by service name
+```
+
 ## Architecture
 
 ```
