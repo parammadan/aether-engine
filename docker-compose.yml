@@ -1,0 +1,52 @@
+# A real multi-container Aether cluster: one coordinator + three shard nodes, each in its
+# own container on a shared network, addressing each other by service name (not localhost) —
+# the bind/advertise split doing its job across containers.
+#
+#   docker compose up --build         # bring the cluster up
+#   docker compose up --build -d      # detached
+#   docker compose down               # tear it down
+#
+# Query it from the host once up (with the repo built locally):
+#   AETHER_COORDINATOR_ADDR=127.0.0.1:50050 cargo run -p coordinator --example cluster_query -- Synthetica 5
+
+services:
+  coordinator:
+    build: .
+    command: coordinator
+    environment:
+      AETHER_COORDINATOR_ADDR: 0.0.0.0:50050
+      AETHER_SHARD_COUNT: "3"
+    ports:
+      - "50050:50050"   # expose the coordinator to the host
+
+  shard0: &shard
+    build: .
+    command: shard-node
+    depends_on: [coordinator]
+    environment: &shard-env
+      AETHER_NODE_ID: shard0
+      AETHER_SHARD_INDEX: "0"
+      AETHER_SHARD_COUNT: "3"
+      AETHER_SHARD_ADDR: 0.0.0.0:50060          # bind the wildcard inside the container
+      AETHER_ADVERTISE_ADDR: shard0:50060       # advertise the dialable service name
+      AETHER_COORDINATOR_ADDR: coordinator:50050
+      AETHER_SOURCE: synthetic
+      AETHER_POLL_SECS: "2"
+
+  shard1:
+    <<: *shard
+    environment:
+      <<: *shard-env
+      AETHER_NODE_ID: shard1
+      AETHER_SHARD_INDEX: "1"
+      AETHER_SHARD_ADDR: 0.0.0.0:50061
+      AETHER_ADVERTISE_ADDR: shard1:50061
+
+  shard2:
+    <<: *shard
+    environment:
+      <<: *shard-env
+      AETHER_NODE_ID: shard2
+      AETHER_SHARD_INDEX: "2"
+      AETHER_SHARD_ADDR: 0.0.0.0:50062
+      AETHER_ADVERTISE_ADDR: shard2:50062

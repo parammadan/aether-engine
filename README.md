@@ -226,6 +226,24 @@ AETHER_SHARD_INDEX=1 AETHER_SHARD_COUNT=2 AETHER_SHARD_ADDR=127.0.0.1:50052 AETH
 cargo run -p coordinator --example cluster_query -- united 5
 ```
 
+## Deploy (containers)
+
+A real multi-container cluster — one coordinator + three shard nodes, each in its own
+container addressing the others by **service name** (not localhost), so the bind/advertise
+split works across separate network namespaces exactly as it would across hosts:
+
+```bash
+docker compose up --build            # coordinator + 3 shards
+# query it from the host:
+AETHER_COORDINATOR_ADDR=127.0.0.1:50050 cargo run -p coordinator --example cluster_query -- Synthetica 5
+docker compose down
+```
+
+The image is a multi-stage build (`Dockerfile`): compile the release binaries once, ship
+them on `debian-slim`; the same image runs either role, selected by `command:` in
+`docker-compose.yml`. Verified end-to-end: a fan-out query returns hits merged across 3/3
+containerized shards.
+
 ## Build
 
 ```bash
