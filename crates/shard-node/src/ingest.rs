@@ -247,22 +247,59 @@ pub struct HttpSource {
     url: String,
     id_field: String,
     id_prefix: String,
+    /// Dot path to the records array (e.g. "features" for GeoJSON, "data" for many APIs).
+    /// Empty = the response is itself the array (or a single object).
+    records_path: Vec<String>,
 }
 
 impl HttpSource {
     pub fn from_env() -> Self {
+        let path = std::env::var("AETHER_HTTP_RECORDS_PATH").unwrap_or_default();
         Self {
             client: reqwest::Client::new(),
             url: std::env::var("AETHER_HTTP_URL").unwrap_or_default(),
             id_field: std::env::var("AETHER_HTTP_ID_FIELD").unwrap_or_else(|_| "id".to_string()),
             id_prefix: std::env::var("AETHER_HTTP_ID_PREFIX").unwrap_or_else(|_| "http".to_string()),
+            records_path: path.split('.').filter(|s| !s.is_empty()).map(String::from).collect(),
         }
     }
 }
 
-/// Map one flat JSON object onto a generic document: strings → `text`, numbers → `number`,
-/// bools → `text` ("true"/"false"). Nested objects/arrays and nulls are skipped (a flat
-/// record model, documented). The id is `<prefix>-<id_field value>` or `<prefix>-<index>`.
+/// Recursively flatten a JSON object into a generic document: strings → `text`, numbers →
+/// `number`, bools → `text`. Nested objects are flattened with DOTTED field names
+/// (`properties.mag`, `geometry.type`) so keys at different levels never collide — real
+/// feeds like GeoJSON carry a `type` at three levels, and a bare leaf key would clobber
+/// them. A `coordinates` array `[lon, lat, ...]` (GeoJSON) sets the document's geo.
+fn flatten_into(prefix: &str, obj: &serde_json::Map<String, serde_json::Value>, doc: &mut FlightDocument) {
+    for (k, val) in obj {
+        let key = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+        match val {
+            serde_json::Value::String(s) => {
+                doc.text.insert(key, s.clone());
+            }
+            serde_json::Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    doc.number.insert(key, f);
+                }
+            }
+            serde_json::Value::Bool(b) => {
+                doc.text.insert(key, b.to_string());
+            }
+            serde_json::Value::Object(inner) => flatten_into(&key, inner, doc),
+            serde_json::Value::Array(a) if k == "coordinates" => {
+                let nums: Vec<f64> = a.iter().filter_map(|x| x.as_f64()).collect();
+                if nums.len() >= 2 {
+                    doc.longitude = nums[0];
+                    doc.latitude = nums[1];
+                }
+            }
+            _ => {} // other arrays / null skipped
+        }
+    }
+}
+
+/// Map one JSON record onto a generic document (recursively flattened). The id is
+/// `<prefix>-<id_field value>` or `<prefix>-<index>`.
 fn record_to_doc(rec: &serde_json::Value, id_field: &str, id_prefix: &str, idx: usize) -> FlightDocument {
     let mut doc = FlightDocument::default();
     let id = rec
@@ -274,22 +311,7 @@ fn record_to_doc(rec: &serde_json::Value, id_field: &str, id_prefix: &str, idx: 
         .unwrap_or_else(|| idx.to_string());
     doc.icao24 = format!("{id_prefix}-{id}");
     if let Some(obj) = rec.as_object() {
-        for (k, val) in obj {
-            match val {
-                serde_json::Value::String(s) => {
-                    doc.text.insert(k.clone(), s.clone());
-                }
-                serde_json::Value::Number(n) => {
-                    if let Some(f) = n.as_f64() {
-                        doc.number.insert(k.clone(), f);
-                    }
-                }
-                serde_json::Value::Bool(b) => {
-                    doc.text.insert(k.clone(), b.to_string());
-                }
-                _ => {} // nested/null skipped — flat record model
-            }
-        }
+        flatten_into("", obj, &mut doc);
     }
     doc
 }
@@ -302,13 +324,26 @@ impl FlightSource for HttpSource {
         }
         let resp = self.client.get(&self.url).send().await?.error_for_status()?;
         let v: serde_json::Value = resp.json().await?;
-        Ok(json_to_docs(&v, &self.id_field, &self.id_prefix))
+        Ok(json_to_docs(&v, &self.id_field, &self.id_prefix, &self.records_path))
     }
 }
 
-/// Parse a JSON value (array of objects, or a single object) into generic documents.
-fn json_to_docs(v: &serde_json::Value, id_field: &str, id_prefix: &str) -> Vec<FlightDocument> {
-    let records: Vec<&serde_json::Value> = match v {
+/// Parse a JSON value into generic documents: navigate `records_path` to the array (empty =
+/// top level), then map each element (a single object yields one document).
+fn json_to_docs(
+    v: &serde_json::Value,
+    id_field: &str,
+    id_prefix: &str,
+    records_path: &[String],
+) -> Vec<FlightDocument> {
+    let mut cur = v;
+    for seg in records_path {
+        match cur.get(seg) {
+            Some(next) => cur = next,
+            None => return vec![],
+        }
+    }
+    let records: Vec<&serde_json::Value> = match cur {
         serde_json::Value::Array(a) => a.iter().collect(),
         obj @ serde_json::Value::Object(_) => vec![obj],
         _ => vec![],
@@ -388,7 +423,7 @@ impl FlightSource for S3Source {
             };
             // Namespace ids by the object key so records from different objects never collide.
             let id_prefix = format!("s3:{key}");
-            docs.extend(json_to_docs(&v, &self.id_field, &id_prefix));
+            docs.extend(json_to_docs(&v, &self.id_field, &id_prefix, &[]));
         }
         Ok(docs)
     }
@@ -584,12 +619,27 @@ mod tests {
         // Both the HTTP and S3 connectors funnel through json_to_docs. An array yields one
         // doc per element; a lone object yields one doc; anything else yields none.
         let arr = json!([{"id": "a", "name": "x"}, {"id": "b", "name": "y"}]);
-        assert_eq!(json_to_docs(&arr, "id", "http").len(), 2);
+        assert_eq!(json_to_docs(&arr, "id", "http", &[]).len(), 2);
         let obj = json!({"id": "solo", "name": "z"});
-        let docs = json_to_docs(&obj, "id", "s3:file.json");
+        let docs = json_to_docs(&obj, "id", "s3:file.json", &[]);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].icao24, "s3:file.json-solo", "object-key-namespaced id");
-        assert!(json_to_docs(&json!(42), "id", "http").is_empty(), "scalars yield no docs");
+        assert!(json_to_docs(&json!(42), "id", "http", &[]).is_empty(), "scalars yield no docs");
+
+        // GeoJSON-style nested feed via a records path — flatten + geo extraction.
+        let geo = json!({
+            "features": [{
+                "id": "eq1",
+                "properties": {"mag": 3.2, "place": "10km W of Anza, CA"},
+                "geometry": {"coordinates": [-116.7, 33.5, 4.6]}
+            }]
+        });
+        let docs = json_to_docs(&geo, "id", "quake", &["features".to_string()]);
+        assert_eq!(docs.len(), 1, "records path navigates into 'features'");
+        assert_eq!(docs[0].number.get("properties.mag").copied(), Some(3.2), "nested field, dotted");
+        assert_eq!(docs[0].text.get("properties.place").map(String::as_str), Some("10km W of Anza, CA"));
+        assert!((docs[0].latitude - 33.5).abs() < 1e-6, "geo lat from coordinates[1]");
+        assert!((docs[0].longitude - -116.7).abs() < 1e-6, "geo lon from coordinates[0]");
     }
 
     #[test]
