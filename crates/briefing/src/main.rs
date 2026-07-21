@@ -43,13 +43,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    // Dry-run is the default sink. A real SMTP emailer would be selected here behind an
-    // explicit flag; until then, "send" is still inert — the safe default.
+    // Dry-run is the default sink. A real SMTP emailer is used ONLY when the operator both
+    // opts in (AETHER_BRIEFING_SEND=send) AND has configured SMTP (and built --features
+    // smtp). Any missing piece falls back to dry-run — the safe default; nothing sends by
+    // accident. The allowlist still gates recipients regardless of the sink.
     let send = std::env::var("AETHER_BRIEFING_SEND").as_deref() == Ok("send");
-    let emailer: Arc<dyn Emailer> = Arc::new(DryRunEmailer::default());
-    if send {
-        eprintln!("briefing: AETHER_BRIEFING_SEND=send, but no real emailer is wired — staying dry-run (safe default)");
-    }
+    let emailer: Arc<dyn Emailer> = match (send, briefing::smtp::from_env()) {
+        (true, Some(smtp)) => {
+            eprintln!("briefing: SMTP delivery enabled (recipients still allowlisted)");
+            smtp
+        }
+        (true, None) => {
+            eprintln!("briefing: AETHER_BRIEFING_SEND=send but SMTP not configured/built — staying dry-run (safe default)");
+            Arc::new(DryRunEmailer::default())
+        }
+        (false, _) => Arc::new(DryRunEmailer::default()),
+    };
 
     let model: Box<dyn Model> = match nlq::bedrock::from_env().await {
         Some(m) => {

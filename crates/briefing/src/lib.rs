@@ -10,6 +10,8 @@ use async_trait::async_trait;
 
 use nlq::{Budget, EngineTools, Model};
 
+pub mod smtp;
+
 /// A recipient allowlist. Email may go ONLY to addresses on it — the governance around the
 /// single egress. An empty allowlist permits nothing (fail-closed).
 #[derive(Clone, Default)]
