@@ -2,6 +2,18 @@
 
 A distributed spatial-vector search engine, written from scratch in Rust.
 
+**[See it run](#see-it-run)** · **[Architecture](#architecture)** · **[Performance](#performance)**
+
+<!-- ┌─ DEMO ASSETS: uncomment the block below once you've produced the assets (see docs/DEMO.md).
+     Kept commented so the live README never shows a broken image or a dead link.
+     1. Record docs/demo.gif  2. paste your asciinema URL  3. paste your Fly URL, then uncomment.
+
+![Aether: kill a shard leader (-9) and watch the follower get promoted with zero failed queries](docs/demo.gif)
+
+**▶ [Live demo](https://aether-demo.fly.dev)** · **📽️ [Terminal cast](https://asciinema.org/a/REPLACE_ME)**
+
+     └─ END DEMO ASSETS -->
+
 A coordinator (control plane) fans queries across **N shard nodes** (data plane), each of
 which replicates to a follower so the cluster keeps serving when a node dies. It ingests
 live flight telemetry from the [OpenSky Network](https://opensky-network.org/) as its
