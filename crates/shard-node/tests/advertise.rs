@@ -76,12 +76,22 @@ async fn node_registers_its_advertised_address_not_its_bind_address() {
     );
 
     // ...and that address must actually be routable: a fan-out query reaches the node.
-    let resp = client
-        .search(SearchRequest { query: "anything".into(), limit: 1, filter: None })
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(resp.shards_answered, 1, "the advertised address must be dialable");
+    // Registration can land a beat before the node's search server is accepting connections,
+    // so poll until the advertised address is dialable rather than racing a single query.
+    let mut shards_answered = 0;
+    for _ in 0..60 {
+        let resp = client
+            .search(SearchRequest { query: "anything".into(), limit: 1, filter: None })
+            .await
+            .unwrap()
+            .into_inner();
+        shards_answered = resp.shards_answered;
+        if shards_answered == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(shards_answered, 1, "the advertised address must be dialable");
 
     let _ = child.kill();
     let _ = child.wait();
