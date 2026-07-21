@@ -23,9 +23,12 @@ pub fn definitions() -> Value {
     json!([
         {
             "name": "search_flights",
-            "description": "Keyword search over live flight documents (callsign, origin, \
-                            destination, aircraft type). Fans out across every shard and \
-                            returns a merged, ranked result.",
+            "description": "Find SPECIFIC flight records matching keywords (callsign, origin, \
+                            destination, aircraft type) — use it to retrieve individual \
+                            flights, e.g. 'the flight with callsign SYN0' or 'flights from \
+                            France'. NOT for summaries: to count, list distinct values, or \
+                            get a breakdown/distribution, use aggregate_flights instead. Fans \
+                            out across every shard and returns a merged, ranked result.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -73,11 +76,16 @@ pub fn definitions() -> Value {
         },
         {
             "name": "aggregate_flights",
-            "description": "Summarize flights across the whole cluster: counts, value-counts \
-                            (per origin/aircraft type/...), histograms (time or a numeric \
-                            field), geo-density grid, or percentiles of a numeric field. \
-                            Each shard computes a partial; the coordinator merges them and \
-                            reports coverage.",
+            "description": "Summarize flights across the whole cluster — use this for ANY \
+                            question about how many, which/what distinct values exist, a \
+                            breakdown or distribution, or top-N. kind=count answers 'how \
+                            many'; kind=value_counts answers 'which/what X are flying' or \
+                            'breakdown by X' (field=origin, aircraft_type, ...); \
+                            time/numeric_histogram, geo_grid, and percentiles cover \
+                            distributions of a field. Prefer this over search whenever the \
+                            answer is a summary rather than specific records. Each shard \
+                            computes a partial; the coordinator merges them and reports \
+                            coverage.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
