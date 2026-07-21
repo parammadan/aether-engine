@@ -6,7 +6,7 @@
 //! absolutely read-only; memory is the ONE place an agent may write, and these four
 //! properties — isolation, TTL, attribution, quota — are what make that exception safe.
 //!
-//! Storage scope (honest, see ADR-0044): this is the governed memory LAYER with its own
+//! Storage scope (honest): this is the governed memory LAYER with its own
 //! store, deliberately separate from the flight telemetry index (structural namespace
 //! isolation). Distributing it across the shard raft groups and unifying the two stores
 //! under one generic document type is a larger refactor, deferred.

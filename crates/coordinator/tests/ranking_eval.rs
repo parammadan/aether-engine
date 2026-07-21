@@ -162,7 +162,7 @@ fn adaptive_routing_is_measured_against_rrf_and_only_ships_if_it_wins() {
     // THE GATE: adaptive routing ships ONLY if it beats plain RRF. On the lexical hash
     // embedder it does NOT — cheap features can't tell a rare RELEVANCE signal ("concorde")
     // from a rare DISTRACTOR ("zzqx"), so the router mis-routes the trap query and loses.
-    // Verdict recorded in ADR-0042: RRF stands, adaptive routing rejected WITH numbers.
+    // Verdict: RRF stands, adaptive routing rejected WITH numbers.
     assert!(
         adaptive_avg <= rrf_avg + 1e-9,
         "adaptive BEAT rrf ({adaptive_avg:.3} > {rrf_avg:.3}) — revisit: it may be worth shipping"

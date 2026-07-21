@@ -11,7 +11,7 @@
 //! certificate under mTLS; tokens gate only what an external operator or client calls.
 //!
 //! No external IdP: the decision here is *scoping*, not identity federation. Static
-//! tokens keep the trust model auditable in one file (ADR-0035).
+//! tokens keep the trust model auditable in one file.
 
 use std::collections::HashMap;
 
