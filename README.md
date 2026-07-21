@@ -226,6 +226,23 @@ AETHER_SHARD_INDEX=1 AETHER_SHARD_COUNT=2 AETHER_SHARD_ADDR=127.0.0.1:50052 AETH
 cargo run -p coordinator --example cluster_query -- united 5
 ```
 
+## Observability
+
+The coordinator exposes Prometheus metrics on a **separate** port (`AETHER_METRICS_ADDR`,
+default `127.0.0.1:9090`, or `off`), so scraping never touches the gRPC data plane:
+
+```bash
+curl -s http://127.0.0.1:9090/metrics
+# aether_queries_total / aether_query_errors_total
+# aether_aggregates_total / aether_aggregate_errors_total
+# aether_query_latency_ms histogram (le=1,5,10,50,100,500,+Inf, _sum, _count)
+# aether_cluster_leaders / aether_cluster_shards  (gauges, read from the registry at scrape)
+```
+
+The query path is instrumented in `crates/coordinator/src/metrics.rs`; the exposition is
+served by a tiny dependency-free HTTP responder. Point Prometheus at `:9090` and the query
+histogram and cluster gauges are ready to graph or alert on.
+
 ## Deploy (containers)
 
 A real multi-container cluster — one coordinator + three shard nodes, each in its own

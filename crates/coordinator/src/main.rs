@@ -83,6 +83,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let control = coordinator::control::ControlPlane::from_env(registry.clone()).await?;
     let auth = Arc::new(coordinator::auth::Auth::from_env()?);
 
+    // Operational metrics: Prometheus exposition on a SEPARATE port, so scraping never
+    // touches the gRPC data plane. Disable by setting AETHER_METRICS_ADDR=off.
+    let metrics = Arc::new(coordinator::metrics::Metrics::default());
+    let metrics_addr = std::env::var("AETHER_METRICS_ADDR").unwrap_or_else(|_| "127.0.0.1:9090".to_string());
+    if metrics_addr != "off" {
+        match metrics_addr.parse::<std::net::SocketAddr>() {
+            Ok(maddr) => {
+                tokio::spawn(coordinator::metrics::serve(maddr, metrics.clone(), registry.clone()));
+            }
+            Err(_) => eprintln!("metrics: invalid AETHER_METRICS_ADDR '{metrics_addr}', metrics disabled"),
+        }
+    }
+
     println!(
         "aether-coordinator serving on {addr}; cluster N={shard_count}; liveness timeout {}s",
         liveness_timeout.as_secs()
@@ -97,7 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(control) => {
             let control = Arc::new(control);
             let transport = consensus::service::RaftTransportService::new(control.raft.clone());
-            let service = CoordinatorService::with_control(registry, control).with_auth(auth);
+            let service =
+                CoordinatorService::with_control(registry, control).with_auth(auth).with_metrics(metrics);
             builder
                 .add_service(CoordinatorServer::new(service))
                 .add_service(common::pb::raft_transport_server::RaftTransportServer::new(transport))
@@ -105,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
         }
         None => {
-            let service = CoordinatorService::new(registry).with_auth(auth);
+            let service = CoordinatorService::new(registry).with_auth(auth).with_metrics(metrics);
             builder
                 .add_service(CoordinatorServer::new(service))
                 .serve(addr)

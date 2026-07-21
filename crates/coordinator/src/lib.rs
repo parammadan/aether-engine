@@ -9,5 +9,6 @@ pub mod auth;
 pub mod control;
 pub mod fanout;
 pub mod hybrid;
+pub mod metrics;
 pub mod registry;
 pub mod service;

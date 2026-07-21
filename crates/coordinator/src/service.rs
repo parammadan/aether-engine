@@ -47,23 +47,41 @@ pub struct CoordinatorService {
     control: Option<Arc<crate::control::ControlPlane>>,
     /// Scoped-token policy for client-facing RPCs (disabled = every check passes).
     auth: Arc<crate::auth::Auth>,
+    /// Operational metrics for the query path (shared with the /metrics HTTP server).
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl CoordinatorService {
     pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
-        Self { registry, control: None, auth: Arc::new(crate::auth::Auth::default()) }
+        Self {
+            registry,
+            control: None,
+            auth: Arc::new(crate::auth::Auth::default()),
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+        }
     }
 
     pub fn with_control(
         registry: Arc<RwLock<Registry>>,
         control: Arc<crate::control::ControlPlane>,
     ) -> Self {
-        Self { registry, control: Some(control), auth: Arc::new(crate::auth::Auth::default()) }
+        Self {
+            registry,
+            control: Some(control),
+            auth: Arc::new(crate::auth::Auth::default()),
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+        }
     }
 
     /// Attach a scoped-token policy (from `Auth::from_env`).
     pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
         self.auth = auth;
+        self
+    }
+
+    /// Share a metrics registry with the /metrics server so scrapes see this service's counts.
+    pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        self.metrics = metrics;
         self
     }
 }
@@ -90,6 +108,7 @@ impl Coordinator for CoordinatorService {
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
+        let t_total = std::time::Instant::now();
         self.auth.require(&request, crate::auth::Scope::Read)?;
         let req = request.into_inner();
         if let Some(f) = &req.filter {
@@ -120,6 +139,7 @@ impl Coordinator for CoordinatorService {
             started.elapsed().as_millis() as u64,
         );
 
+        self.metrics.record_query(t_total.elapsed(), true);
         Ok(Response::new(merged))
     }
 
@@ -252,6 +272,7 @@ impl Coordinator for CoordinatorService {
             started.elapsed().as_millis() as u64,
         );
 
+        self.metrics.record_aggregate(true);
         Ok(Response::new(common::pb::AggregateResponse {
             partial: Some(merged),
             percentiles,
