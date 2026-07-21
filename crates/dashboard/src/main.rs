@@ -375,15 +375,25 @@ async fn api_ask(axum::extract::Query(params): axum::extract::Query<HashMap<Stri
     if question.trim().is_empty() {
         return ([("content-type", "application/json")], json!({ "error": "empty question" }).to_string());
     }
-    let answer = match nlq::bedrock::from_env().await {
-        Some(model) => nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await,
-        None => nlq::run(&nlq::HeuristicModel, &nlq::EngineTools, &question, nlq::Budget::default()).await,
+    // Model selection: a real LLM when one is configured — an OpenAI-compatible endpoint
+    // (local llama.cpp / Groq / OpenAI) or Bedrock — otherwise the offline heuristic router.
+    // The label is returned so the UI can show which brain actually answered.
+    let (answer, model_label) = if let Some(model) = nlq::openai::from_env().await {
+        let name = std::env::var("AETHER_OPENAI_MODEL").unwrap_or_else(|_| "local LLM".to_string());
+        (nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await, name)
+    } else if let Some(model) = nlq::bedrock::from_env().await {
+        let name = std::env::var("AETHER_BEDROCK_MODEL").unwrap_or_else(|_| "bedrock".to_string());
+        (nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await, name)
+    } else {
+        (nlq::run(&nlq::HeuristicModel, &nlq::EngineTools, &question, nlq::Budget::default()).await,
+         "heuristic router (no LLM configured)".to_string())
     };
     let body = json!({
         "answer": answer.text,
         "provenance": answer.provenance,
         "tool_calls": answer.tool_calls,
         "budget_exhausted": answer.budget_exhausted,
+        "model": model_label,
     });
     ([("content-type", "application/json")], body.to_string())
 }

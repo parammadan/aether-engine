@@ -11,7 +11,7 @@ license.workspace = true
 
 [dependencies]
 common = { path = "../common" }
-nlq = { path = "../nlq" }
+nlq = { path = "../nlq", features = ["openai"] }
 tokio.workspace = true
 tonic.workspace = true
 axum = { version = "0.7", features = ["ws"] }

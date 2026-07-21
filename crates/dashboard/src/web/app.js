@@ -196,7 +196,9 @@ if (askForm) {
       const r = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
       const a = await r.json();
       if (a.error) { out.textContent = a.error; return; }
-      let text = a.answer || "";
+      let text = "";
+      if (a.model) text += `🧠 planned by ${a.model}\n\n`;
+      text += a.answer || "";
       if (a.provenance && a.provenance.length) {
         text += "\n\n— evidence —\n" + a.provenance.map((p, i) => `  [${i + 1}] ${p}`).join("\n");
       }
