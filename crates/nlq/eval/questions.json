@@ -1,5 +1,5 @@
 {
-  "description": "Graded NLQ question set. Each question is run through the live loop; the answer is graded by whether it CALLED the expected tool(s) and its text CONTAINS the expected substrings (case-insensitive). Deliberately behavioral, not exact-match: the model's prose varies, its tool plan should not. Run with the bedrock feature + AETHER_BEDROCK_MODEL; never in CI.",
+  "description": "Graded NLQ question set. Each question is run through the live loop; the answer is graded by whether it CALLED the expected tool(s) and its text CONTAINS the expected substrings (case-insensitive). Deliberately behavioral, not exact-match: the model's prose varies, its tool plan should not. Run against any configured planner (OpenAI-compatible or Bedrock); falls back to the offline heuristic with no model. Never in CI.",
   "questions": [
     {
       "id": "count-all",
@@ -14,10 +14,22 @@
       "expect_contains": []
     },
     {
+      "id": "aircraft-types",
+      "ask": "what's the breakdown of aircraft types?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
       "id": "find-callsign",
       "ask": "find the flight with callsign SYN0",
       "expect_tools": ["search_flights"],
       "expect_contains": ["SYN0"]
+    },
+    {
+      "id": "find-callsign-2",
+      "ask": "show me the flight whose callsign is SYN5",
+      "expect_tools": ["search_flights"],
+      "expect_contains": ["SYN5"]
     },
     {
       "id": "filtered-count",
@@ -26,8 +38,20 @@
       "expect_contains": []
     },
     {
+      "id": "high-altitude-count",
+      "ask": "how many flights are above 10000 meters?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
       "id": "altitude-percentiles",
       "ask": "what are the p50 and p99 altitudes?",
+      "expect_tools": ["aggregate_flights"],
+      "expect_contains": []
+    },
+    {
+      "id": "velocity-percentiles",
+      "ask": "what are the velocity percentiles across all flights?",
       "expect_tools": ["aggregate_flights"],
       "expect_contains": []
     },
