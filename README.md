@@ -186,6 +186,28 @@ always runs (6/6 on the routing smoke-eval).
   email hand-off — triple-gated by a recipient allowlist, a dry-run default, and a
   build-time feature for real SMTP. Everything else stays structurally read-only.
 
+## Performance
+
+`./scripts/bench.sh` is a closed-loop load generator (`coordinator/examples/loadgen.rs`):
+it fans N concurrent workers at the coordinator, issuing back-to-back queries, and reports
+throughput and latency percentiles. Measured on one Apple M1 (8 cores, 8 GB), 32 concurrent
+clients, keyword search over a synthetic corpus:
+
+| shards | throughput | p50 | p99 |
+|-------:|-----------:|----:|----:|
+| 1 | ~3700 QPS | 4.0 ms | 50 ms |
+| 2 | ~1800 QPS | 5.6 ms | 60 ms |
+| 4 | ~580 QPS | 60 ms | 133 ms |
+
+Read these honestly: **all shards here are co-located on one 8-core host**, so adding shards
+adds scatter-gather fan-out and merge cost plus CPU contention *without adding hardware* —
+throughput therefore falls with shard count. This measures per-host coordination overhead,
+not horizontal scale-out; the scale-out win requires one shard per machine (each shard adds
+its own cores and index), where the coordinator's fan-out is the point. Single-digit-ms p50
+at 1–2 shards shows the query path itself is interactive; the tail grows once 32 clients ×
+fan-out saturates the shared cores. Run `./scripts/bench.sh 10 64 count` to vary duration,
+concurrency, and query kind.
+
 ## Run
 
 A single node:
