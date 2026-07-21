@@ -27,10 +27,16 @@ fresh node that registers and catches up from replication. Prometheus metrics ar
 Other one-command showcases:
 
 ```bash
+./scripts/demo.sh              # narrated terminal demo: queries → kill a leader → failover → recovery
 ./scripts/live-eval-local.sh   # a local LLM answers plain-English questions over the cluster (10/10)
 ./scripts/bench.sh             # throughput/latency scaling table (1/2/4 shards)
 docker compose up --build      # the same cluster as containers, peers addressed by service name
 ```
+
+`scripts/demo.sh` is recording-ready — `asciinema rec aether.cast -c ./scripts/demo.sh`
+captures the whole chaos-and-recovery story as an embeddable terminal cast. For a public,
+clickable version of the dashboard, `fly.toml` deploys it to Fly.io (`fly deploy`) as a
+scale-to-zero VM that runs the cluster inside one container on synthetic data.
 
 ## Architecture
 

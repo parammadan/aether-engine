@@ -9,12 +9,17 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY proto ./proto
 COPY crates ./crates
-RUN cargo build --release -p coordinator -p shard-node
+RUN cargo build --release -p coordinator -p shard-node -p dashboard
 
 FROM debian:bookworm-slim AS runtime
 RUN useradd -m aether
+# All three binaries share one directory so the dashboard's supervisor finds `coordinator`
+# and `shard-node` as siblings of its own executable (see supervisor::bin).
 COPY --from=builder /build/target/release/coordinator /usr/local/bin/coordinator
 COPY --from=builder /build/target/release/shard-node /usr/local/bin/shard-node
+COPY --from=builder /build/target/release/dashboard /usr/local/bin/dashboard
 USER aether
-# No default command: docker-compose selects `coordinator` or `shard-node`. Configuration is
-# entirely via AETHER_* environment variables (see docker-compose.yml).
+# Default to the interactive dashboard (the showcase). docker-compose overrides `command:`
+# to run a raw `coordinator`/`shard-node` cluster instead. Configuration is via AETHER_*
+# environment variables (see docker-compose.yml / fly.toml).
+CMD ["dashboard"]
