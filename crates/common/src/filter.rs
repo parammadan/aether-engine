@@ -1,8 +1,9 @@
-//! Structured-filter evaluation: validate a filter's shape once (unknown field or
-//! type-mismatched test = loud error, never a silent no-op), then test documents
-//! against it. Lives in `common` so the coordinator can validate BEFORE fanning out
-//! (a bad filter is the caller's error, not partial coverage) and the shard applies
-//! the same rules when evaluating.
+//! Structured-filter evaluation: validate a filter's shape once (a type-mismatched test on
+//! a built-in column = loud error, never a silent no-op), then test documents against it.
+//! Unknown field NAMES are not errors — they're generic connector-defined fields, matched
+//! from the document's `text`/`number` maps. Lives in `common` so the coordinator can
+//! validate BEFORE fanning out (a bad filter is the caller's error, not partial coverage)
+//! and the shard applies the same rules when evaluating.
 
 use crate::pb::{filter_condition::Test, Filter, FilterCondition, FlightDocument};
 

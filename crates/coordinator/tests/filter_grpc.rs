@@ -163,18 +163,21 @@ async fn filtered_aggregate_counts_only_matching_docs() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bad_filter_is_a_loud_error_not_partial_coverage() {
     let mut client = start_cluster().await;
+    // A bad filter is a TYPE MISMATCH on a built-in column — `equals` on the numeric
+    // `altitude`. (Unknown field NAMES are no longer errors: they're valid generic fields a
+    // connector may define, so validation can't tell a typo from a real generic field.)
     let bad = Filter {
         conditions: vec![FilterCondition {
-            field: "no_such_field".into(),
-            test: Some(Test::Equals("x".into())),
+            field: "altitude".into(),
+            test: Some(Test::Equals("high".into())),
         }],
     };
     let err = client
         .search(SearchRequest { query: "france".into(), limit: 0, filter: Some(bad.clone()) })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Code::InvalidArgument, "unknown field must be rejected loudly");
-    assert!(err.message().contains("no_such_field"), "names the offending field: {}", err.message());
+    assert_eq!(err.code(), Code::InvalidArgument, "a built-in type mismatch must be rejected loudly");
+    assert!(err.message().contains("altitude"), "names the offending field: {}", err.message());
 
     let err = client
         .aggregate(AggregateRequest {
