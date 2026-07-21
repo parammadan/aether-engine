@@ -112,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/styles.css", get(styles_css))
         .route("/ws", get(ws_upgrade))
         .route("/api/ask", get(api_ask))
+        .route("/api/report", get(api_report))
         .route("/api/state", get(api_state))
         .route("/api/kill/:node_id", post(api_kill))
         .route("/api/drain/:node_id", post(api_drain))
@@ -375,25 +376,76 @@ async fn api_ask(axum::extract::Query(params): axum::extract::Query<HashMap<Stri
     if question.trim().is_empty() {
         return ([("content-type", "application/json")], json!({ "error": "empty question" }).to_string());
     }
-    // Model selection: a real LLM when one is configured — an OpenAI-compatible endpoint
-    // (local llama.cpp / Groq / OpenAI) or Bedrock — otherwise the offline heuristic router.
-    // The label is returned so the UI can show which brain actually answered.
-    let (answer, model_label) = if let Some(model) = nlq::openai::from_env().await {
-        let name = std::env::var("AETHER_OPENAI_MODEL").unwrap_or_else(|_| "local LLM".to_string());
-        (nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await, name)
-    } else if let Some(model) = nlq::bedrock::from_env().await {
-        let name = std::env::var("AETHER_BEDROCK_MODEL").unwrap_or_else(|_| "bedrock".to_string());
-        (nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await, name)
-    } else {
-        (nlq::run(&nlq::HeuristicModel, &nlq::EngineTools, &question, nlq::Budget::default()).await,
-         "heuristic router (no LLM configured)".to_string())
-    };
+    let (model, model_label) = select_model().await;
+    let answer = nlq::run(model.as_ref(), &nlq::EngineTools, &question, nlq::Budget::default()).await;
     let body = json!({
         "answer": answer.text,
         "provenance": answer.provenance,
         "tool_calls": answer.tool_calls,
         "budget_exhausted": answer.budget_exhausted,
         "model": model_label,
+    });
+    ([("content-type", "application/json")], body.to_string())
+}
+
+/// Pick the planning model: a real LLM when configured (OpenAI-compatible endpoint such as a
+/// local llama.cpp server / Groq / OpenAI, or Bedrock), else the offline heuristic router.
+/// Returns the model plus a human label so the UI can show which brain answered.
+async fn select_model() -> (std::sync::Arc<dyn nlq::Model>, String) {
+    if let Some(m) = nlq::openai::from_env().await {
+        (m, std::env::var("AETHER_OPENAI_MODEL").unwrap_or_else(|_| "local LLM".to_string()))
+    } else if let Some(m) = nlq::bedrock::from_env().await {
+        (m, std::env::var("AETHER_BEDROCK_MODEL").unwrap_or_else(|_| "bedrock".to_string()))
+    } else {
+        (std::sync::Arc::new(nlq::HeuristicModel), "heuristic router (no LLM configured)".to_string())
+    }
+}
+
+/// The capstone, surfaced: compose a cluster briefing over the live engine (via the LLM),
+/// then hand it off by email — gated by a recipient allowlist and a dry-run default, so a
+/// report is COMPOSED and PREVIEWED, and "delivery" is recorded intent, not a real send
+/// (real SMTP is a deliberate build-time opt-in). `?to=addr` sets the recipient.
+async fn api_report(axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>) -> impl IntoResponse {
+    let to = params.get("to").cloned().unwrap_or_default();
+    let (model, model_label) = select_model().await;
+    let questions: Vec<String> = [
+        "how many flights are there right now?",
+        "which aircraft types are flying?",
+        "what are the p50 and p99 altitudes?",
+        "is the cluster healthy? how many shards answered?",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    // Compose once (one LLM pass over the engine). The recipient is allowlisted for this demo
+    // so a typed address is approved; delivery is dry-run (recorded intent, nothing sent —
+    // real SMTP is a deliberate build-time opt-in). This is the capstone's governance path:
+    // compose → allowlist-gate → (dry-run) hand-off.
+    let allowlist = if to.trim().is_empty() {
+        briefing::Allowlist::default()
+    } else {
+        briefing::Allowlist::new(vec![to.clone()])
+    };
+    let briefing = briefing::compose(model.as_ref(), &questions).await;
+    let (mut delivered, mut refused) = (vec![], vec![]);
+    if !to.trim().is_empty() {
+        if allowlist.allows(&to) {
+            delivered.push(to.clone());
+        } else {
+            refused.push(format!("recipient not allowlisted: {to}"));
+        }
+    }
+
+    let body = json!({
+        "subject": briefing.subject,
+        "body": briefing.body,
+        "provenance": briefing.provenance,
+        "model": model_label,
+        "to": to,
+        "delivered": delivered,   // recorded intent (dry-run) — nothing actually sent
+        "refused": refused,       // e.g. recipient not allowlisted
+        "dry_run": true,
     });
     ([("content-type", "application/json")], body.to_string())
 }

@@ -210,4 +210,47 @@ if (askForm) {
   };
 }
 
+// Reports: compose a cluster briefing over the live engine (via the LLM) and preview the
+// email hand-off — dry-run, allowlist-gated (the capstone, surfaced in the UI).
+const reportForm = $("report-form");
+if (reportForm) {
+  reportForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const to = $("report-to").value.trim();
+    const out = $("report-out");
+    out.innerHTML = '<div class="muted">composing briefing over the live engine…</div>';
+    try {
+      const r = await fetch(`/api/report?to=${encodeURIComponent(to)}`);
+      const a = await r.json();
+      const delivered = (a.delivered || []).length
+        ? `<span class="badge ok">would send → ${a.delivered.map(esc).join(", ")}</span>` : "";
+      const refused = (a.refused || []).length
+        ? `<span class="badge no">${a.refused.map(esc).join("; ")}</span>` : "";
+      const noRecip = !to ? '<span class="badge no">add a recipient to hand it off</span>' : "";
+      out.innerHTML =
+        `<div class="email">
+           <div class="head">
+             <div class="subj">${esc(a.subject || "Aether cluster briefing")}</div>
+             <div class="meta">
+               <span class="badge model">🧠 ${esc(a.model || "?")}</span>
+               <span class="badge dry">DRY-RUN · nothing sent</span>
+               ${delivered}${refused}${noRecip}
+             </div>
+           </div>
+           <div class="body">${esc(a.body || "")}</div>
+         </div>`;
+    } catch {
+      out.innerHTML = '<div class="muted">report request failed</div>';
+    }
+  };
+}
+
+// Sidebar nav: highlight the clicked section.
+document.querySelectorAll(".nav a").forEach((a) => {
+  a.addEventListener("click", () => {
+    document.querySelectorAll(".nav a").forEach((x) => x.classList.remove("active"));
+    a.classList.add("active");
+  });
+});
+
 connect();

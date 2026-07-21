@@ -3,71 +3,103 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Aether Dashboards</title>
+  <title>Aether — distributed search engine</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header>
-    <h1>Aether</h1>
-    <span class="conn"><span id="conn-dot" class="dot critical"></span><span id="conn-text">connecting…</span></span>
-    <span class="conn muted" id="placement"></span>
-  </header>
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">◆</span> Aether</div>
+    <nav class="nav">
+      <a href="#ask" class="active">🧠 Ask AI</a>
+      <a href="#overview">📊 Overview</a>
+      <a href="#analytics">📈 Analytics</a>
+      <a href="#cluster">🗄️ Cluster</a>
+      <a href="#reports">✉️ Reports</a>
+      <a href="#events-card">📜 Events</a>
+    </nav>
+    <div class="side-foot">
+      <div class="side-status"><span id="conn-dot" class="dot critical"></span><span id="conn-text">connecting…</span></div>
+      <div class="muted tiny" id="placement"></div>
+      <div class="muted tiny">distributed spatial-vector search engine · Rust</div>
+    </div>
+  </aside>
 
-  <section class="panel wide" style="margin:16px 20px 0">
-    <h2>Ask <span class="muted">(natural-language query → engine tools → answer + provenance)</span></h2>
-    <form id="ask-form" style="display:flex;gap:8px">
-      <input id="ask-input" placeholder="e.g. how many flights? · altitude percentiles · flights by aircraft · is the cluster healthy?"
-             style="flex:1;background:var(--surface-2);border:1px solid var(--border);color:var(--text-1);border-radius:6px;padding:8px 10px;font-family:var(--sans)">
-      <button type="submit" style="background:var(--series-1);border:none;color:#fff;border-radius:6px;padding:8px 16px;cursor:pointer">Ask</button>
-    </form>
-    <pre id="ask-answer" style="white-space:pre-wrap;font-family:var(--mono);font-size:12px;color:var(--text-2);margin:10px 0 0"></pre>
-  </section>
+  <div class="app">
+    <header class="topbar">
+      <div class="title">Cluster dashboard</div>
+      <div class="topbar-right"><span class="pill" id="top-status">live</span></div>
+    </header>
 
-  <main>
-    <section class="panel">
-      <h2>Query throughput</h2>
-      <div class="stats">
-        <div class="stat"><div class="num" id="q-ok">0</div><div class="label">ok</div></div>
-        <div class="stat"><div class="num err" id="q-err">0</div><div class="label">errors</div></div>
-        <div class="stat"><div class="num" id="q-matched">0</div><div class="label">matched (last)</div></div>
-        <div class="stat"><div class="num" id="q-ms">0</div><div class="label">ms (last)</div></div>
+    <main>
+      <!-- LLM front and center -->
+      <section class="card accent" id="ask">
+        <h2>🧠 Ask the cluster <span class="muted">natural language → the LLM plans engine tools → answer + provenance</span></h2>
+        <form id="ask-form" class="row">
+          <input id="ask-input" class="input" placeholder="e.g. how many flights? · altitude percentiles · which aircraft types? · is the cluster healthy?">
+          <button type="submit" class="btn primary">Ask</button>
+        </form>
+        <pre id="ask-answer" class="answer"></pre>
+      </section>
+
+      <div class="grid" id="overview">
+        <section class="card">
+          <h2>Query throughput</h2>
+          <div class="stats">
+            <div class="stat"><div class="num" id="q-ok">0</div><div class="label">ok</div></div>
+            <div class="stat"><div class="num err" id="q-err">0</div><div class="label">errors</div></div>
+            <div class="stat"><div class="num" id="q-matched">0</div><div class="label">matched</div></div>
+            <div class="stat"><div class="num" id="q-ms">0</div><div class="label">ms</div></div>
+          </div>
+          <div class="prov" id="q-prov"></div>
+        </section>
+        <section class="card">
+          <h2>Flights by aircraft <span class="muted">value-counts</span></h2>
+          <div class="bars" id="by-aircraft"><div class="muted">waiting…</div></div>
+        </section>
       </div>
-      <div class="prov" id="q-prov"></div>
-    </section>
 
-    <section class="panel">
-      <h2>Flights by aircraft <span class="muted">(value-counts)</span></h2>
-      <div class="bars" id="by-aircraft"><div class="muted">waiting…</div></div>
-    </section>
+      <div class="grid" id="analytics">
+        <section class="card">
+          <h2>Altitude <span class="muted">percentiles · t-digest</span></h2>
+          <div class="stats" id="alt-pcts"><div class="muted">waiting…</div></div>
+          <div class="bars" id="alt-hist" style="margin-top:12px"></div>
+        </section>
+        <section class="card">
+          <h2>Query latency <span class="muted">a node kill draws its own blip &amp; recovery</span></h2>
+          <svg id="series" viewBox="0 0 720 140" preserveAspectRatio="none" class="chart" style="height:140px"></svg>
+          <div class="prov muted" id="series-note"></div>
+        </section>
+      </div>
 
-    <section class="panel">
-      <h2>Altitude <span class="muted">(percentiles · t-digest)</span></h2>
-      <div class="stats" id="alt-pcts"><div class="muted">waiting…</div></div>
-      <div class="bars" id="alt-hist" style="margin-top:10px"></div>
-    </section>
+      <section class="card">
+        <h2>Live geo-density <span class="muted">GEO_GRID aggregate over the whole cluster</span></h2>
+        <svg id="geomap" viewBox="0 0 720 300" preserveAspectRatio="xMidYMid meet" class="chart" style="height:auto"></svg>
+        <div class="prov muted" id="geo-note"></div>
+      </section>
 
-    <section class="panel wide">
-      <h2>Query latency <span class="muted">(a node kill draws its own blip &amp; recovery)</span></h2>
-      <svg id="series" viewBox="0 0 720 140" preserveAspectRatio="none" style="width:100%;height:140px;background:var(--surface-2);border-radius:6px"></svg>
-      <div class="prov muted" id="series-note"></div>
-    </section>
+      <section class="card" id="cluster">
+        <h2>Cluster nodes <span class="muted">by shard · hit “kill” to watch failover recover with zero failed queries</span></h2>
+        <div id="nodes"><div class="muted">waiting…</div></div>
+      </section>
 
-    <section class="panel wide">
-      <h2>Live geo-density <span class="muted">(GEO_GRID aggregate over the whole cluster)</span></h2>
-      <svg id="geomap" viewBox="0 0 720 300" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;background:var(--surface-2);border-radius:6px"></svg>
-      <div class="prov muted" id="geo-note"></div>
-    </section>
+      <!-- The capstone, surfaced: compose a briefing over the engine, hand it off by email -->
+      <section class="card accent" id="reports">
+        <h2>✉️ Reports <span class="muted">the LLM composes a cluster briefing and hands it off by email (dry-run, allowlist-gated)</span></h2>
+        <form id="report-form" class="row">
+          <input id="report-to" class="input" placeholder="recipient email — e.g. ops@aether.io">
+          <button type="submit" class="btn primary">Generate &amp; preview report</button>
+        </form>
+        <div id="report-out" class="report-out">
+          <div class="muted">Composes a cluster briefing over the live engine and previews the email it would send. Dry-run by default — nothing is actually sent; real SMTP is a deliberate opt-in.</div>
+        </div>
+      </section>
 
-    <section class="panel wide">
-      <h2>Nodes <span class="muted">by shard</span></h2>
-      <div id="nodes"><div class="muted">waiting…</div></div>
-    </section>
-
-    <section class="panel wide">
-      <h2>Events</h2>
-      <div class="events" id="events"></div>
-    </section>
-  </main>
+      <section class="card" id="events-card">
+        <h2>Events</h2>
+        <div class="events" id="events"></div>
+      </section>
+    </main>
+  </div>
 
   <script type="module" src="/app.js"></script>
 </body>
