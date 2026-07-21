@@ -187,6 +187,7 @@ impl Model for FakeModel {
 }
 
 pub mod bedrock;
+pub mod openai;
 
 // =============================================================================
 // Heuristic model: a keyword-routing planner for offline demos (no Bedrock).

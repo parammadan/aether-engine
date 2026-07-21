@@ -2756,6 +2756,7 @@ dependencies = [
  "aws-smithy-types",
  "common",
  "coordinator",
+ "reqwest",
  "serde_json",
  "shard-node",
  "tokio",

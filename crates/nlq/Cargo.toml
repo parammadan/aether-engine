@@ -22,11 +22,16 @@ async-trait = "0.1"
 aws-config = { version = "1.9.0", optional = true }
 aws-sdk-bedrockruntime = { version = "1", optional = true }
 aws-smithy-types = { version = "1", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 [features]
 # The live Bedrock planner (env-gated eval). Off by default: the default build and CI
 # link no AWS SDK and drive the loop with a scripted model.
 bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
+# An OpenAI-compatible planner: works against ANY OpenAI-style /chat/completions endpoint
+# — OpenAI, Groq (free tier, hosted open-source Llama), Together, OpenRouter, Fireworks.
+# Off by default; the default build and CI link no HTTP client and use the scripted model.
+openai = ["dep:reqwest"]
 
 [dev-dependencies]
 coordinator = { path = "../coordinator" }

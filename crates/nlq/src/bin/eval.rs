@@ -17,12 +17,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let spec: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     let questions = spec["questions"].as_array().ok_or("questions must be an array")?;
 
-    // Prefer the live Bedrock model when configured; otherwise fall back to the offline
-    // heuristic planner so the eval runs with NO AWS and no errors — a router smoke-eval
-    // rather than a language-quality eval, labeled as such.
-    let (model, label): (std::sync::Arc<dyn nlq::Model>, &str) = match nlq::bedrock::from_env().await {
-        Some(m) => (m, "bedrock"),
-        None => (std::sync::Arc::new(nlq::HeuristicModel), "heuristic (offline)"),
+    // Prefer a live model when configured — an OpenAI-compatible endpoint (OpenAI/Groq/…)
+    // or Bedrock — otherwise fall back to the offline heuristic planner so the eval runs
+    // with NO network and no errors — a router smoke-eval rather than a language-quality
+    // eval, labeled as such.
+    let (model, label): (std::sync::Arc<dyn nlq::Model>, &str) = if let Some(m) =
+        nlq::openai::from_env().await
+    {
+        (m, "openai-compatible")
+    } else if let Some(m) = nlq::bedrock::from_env().await {
+        (m, "bedrock")
+    } else {
+        (std::sync::Arc::new(nlq::HeuristicModel), "heuristic (offline)")
     };
     println!("model: {label}");
 
