@@ -11,7 +11,7 @@ use briefing::{brief_and_send, Allowlist, Emailer};
 use common::pb::coordinator_client::CoordinatorClient;
 use common::pb::coordinator_server::CoordinatorServer;
 use common::pb::shard_search_server::ShardSearchServer;
-use common::pb::{ClusterStateRequest, FlightDocument, NodeRole, RegisterNodeRequest};
+use common::pb::{FlightDocument, NodeRole, RegisterNodeRequest};
 use coordinator::registry::Registry;
 use coordinator::service::CoordinatorService;
 use nlq::HeuristicModel;

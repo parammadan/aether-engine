@@ -56,6 +56,6 @@ async fn dead_first_address_fails_over_to_the_live_coordinator() {
     assert_eq!(state.nodes.len(), 0, "fresh coordinator: empty registry");
 
     // And a list that is ALL dead reports every address it tried, not a panic.
-    let err = common::client::connect_first_healthy(&[dead.clone()]).await.err().unwrap();
+    let err = common::client::connect_first_healthy(std::slice::from_ref(&dead)).await.err().unwrap();
     assert!(err.contains(&dead), "error must name the addresses tried: {err}");
 }

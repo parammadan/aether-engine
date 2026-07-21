@@ -42,9 +42,18 @@ document source.
 aether-engine/
   proto/              gRPC contract (.proto) — single source of truth for the wire format
   crates/
-    common/           generated contract + shard-key hashing (shared by both binaries)
-    coordinator/      control plane: discovery, shard map, scatter-gather
-    shard-node/       data plane: inverted index + ShardSearch gRPC server
+    common/           generated contract, shard-key hashing, embedders, filters
+    coordinator/      control plane: discovery, shard map, scatter-gather, merge, hybrid rank
+    shard-node/       data plane: inverted index, vector index, aggregations, ingestion
+    consensus/        openraft integration: per-shard raft groups over the document log
+    testkit/          in-process cluster harness for integration tests
+    dashboard/        live UI + chaos harness (spawns a real cluster as child processes)
+    agent-tools/      the read-only tool surface (search / aggregate / filter / topology)
+    mcp-agent/        Model Context Protocol server exposing the read-only tools to an LLM
+    nlq/              natural-language query loop (plan → tools → provenance-carrying answer)
+    memory/           agent memory as a governed index type (namespaced, TTL'd, quota'd)
+    federation/       cross-cluster search: scatter-gather over coordinators
+    briefing/         the capstone: a scheduled agent with one audited email egress
 ```
 
 ## Status
@@ -119,6 +128,63 @@ The **kill −9** button SIGKILLs the actual process — watch coverage degrade 
 the follower get promoted (~6s), and coverage return, with zero failed queries. **Add
 follower** spawns a fresh node that registers and catches up from replication. Ctrl-C
 tears down every child.
+
+## Aggregations & analytics
+
+Beyond retrieval, shards compute **aggregations** in the same scatter-gather pass: value
+counts (top origins, aircraft types), numeric histograms and a geo-density map, and
+**percentiles** via a mergeable [t-digest](https://github.com/tdunning/t-digest) — each
+shard streams a compact digest and the coordinator merges them into cluster-wide quantiles
+without shipping raw values. Every aggregation composes with a **structured filter**
+(equality, ranges, geo-bounds over the document fields), so "the p99 altitude of aircraft
+over France above 10,000 m" is one filtered aggregate fanned across the cluster. Filters and
+aggregations share the read path, so partial results under a downed shard degrade the same
+honest way search does.
+
+## Ranking: keyword, vector, hybrid
+
+Keyword (BM25) and vector (cosine) ranking each win different queries — BM25's IDF nails
+rare exact terms, the embedder captures breadth — so the coordinator fuses them with
+**Reciprocal Rank Fusion**. The choice is *measured*, not assumed: a ranking-eval harness
+(`crates/coordinator/tests/ranking_eval.rs`) scores NDCG@10 over a judgment set and gates in
+CI, so no ranking change ships without a number. A deliberately simple adaptive router was
+built, measured against RRF, and **rejected with numbers** — cheap query features couldn't
+tell a rare *relevance* signal from a rare *distractor*, so RRF stands.
+
+## Natural language, live
+
+`crates/nlq` is a planning loop: a model reads a plain-English question, calls the read-only
+tools until it can answer, and the answer carries the **merged provenance** of every tool
+result (which shards answered, freshness, coverage). The loop runs under a hard tool-call
+budget — a confused model costs a bounded number of calls, then returns an honestly-labeled
+partial answer rather than hanging. The loop is generic over the planner: CI drives it with
+a scripted model (no network), and live it runs against **any OpenAI-compatible endpoint**
+(`--features openai` — OpenAI, Groq's free hosted-Llama tier, Together, OpenRouter) or
+**Bedrock** (`--features bedrock`). An env-gated eval harness scores routing over a judgment
+set and, when no live model is reachable, falls back to an offline heuristic planner so it
+always runs (6/6 on the routing smoke-eval).
+
+## Agent platform: memory, federation, generality, the capstone
+
+- **Governed memory** (`crates/memory`): agent memory as a first-class index type rather
+  than an unmanaged side store — namespace-isolated (cross-namespace recall impossible by
+  construction), per-writer quota'd, TTL'd (expiry frees quota), and writer-attributed. It
+  lives in a store separate from the read-only telemetry index, so the one place an agent
+  may write can never touch the data plane.
+- **Cross-cluster federation** (`crates/federation`): one query fanned across independent
+  clusters, treating each coordinator as a super-shard and reusing the coordinator's own
+  merge/coverage — scatter-gather one level up. A downed cluster is *named* in the coverage
+  manifest, not silently dropped; cross-cluster freshness is honestly advisory (independent
+  clocks).
+- **SIEM generality**: pointing the *same* engine at security events (a source behind the
+  existing ingestion trait) with **zero new distributed machinery** — detection breakdowns,
+  entity pivots and timelines are just the existing filtered aggregations. It also surfaced
+  a real modeling lesson (per-event records key by event id, not entity, or the upsert
+  collapses the stream).
+- **The capstone** (`crates/briefing`): a scheduled agent that reads the cluster in plain
+  English and composes a provenance-carrying briefing, whose single outward action is an
+  email hand-off — triple-gated by a recipient allowlist, a dry-run default, and a
+  build-time feature for real SMTP. Everything else stays structurally read-only.
 
 ## Run
 

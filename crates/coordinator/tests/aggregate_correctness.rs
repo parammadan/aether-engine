@@ -18,7 +18,7 @@ fn corpus(n: usize, seed: u64) -> Vec<FlightDocument> {
     let mut rng = seed;
     let mut next = move || {
         rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (rng >> 33) as u64
+        (rng >> 33)
     };
     let origins = ["SFO", "JFK", "ATL", "ORD", "DEN", "LAX"];
     let crafts = ["Boeing 737", "Airbus A320", "Boeing 777", "Embraer E190"];

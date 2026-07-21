@@ -145,7 +145,7 @@ impl InvertedIndex {
     /// new postings in).
     pub fn insert(&mut self, doc: FlightDocument) {
         if let Some(&doc_id) = self.by_key.get(&doc.icao24) {
-            let old = std::mem::replace(&mut self.docs[doc_id as usize], Some(doc))
+            let old = self.docs[doc_id as usize].replace(doc)
                 .expect("by_key never points at a retired slot");
             self.remove_postings(doc_id, &old);
             // Frequencies are computed up front so the immutable borrow of the stored doc

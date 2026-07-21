@@ -460,7 +460,7 @@ impl Registry {
                 self.leaders.insert(shard, node);
                 promotions.push((shard, node_id));
 
-                if self.followers.get(&shard).map_or(false, |f| f.is_empty()) {
+                if self.followers.get(&shard).is_some_and(|f| f.is_empty()) {
                     self.followers.remove(&shard);
                 }
             }

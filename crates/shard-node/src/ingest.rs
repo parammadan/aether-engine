@@ -145,14 +145,11 @@ impl SyntheticSource {
 #[async_trait]
 impl FlightSource for SyntheticSource {
     async fn fetch(&self) -> Result<Vec<FlightDocument>, IngestError> {
-        // Deterministic-but-varied geo/numeric spread so the aggregation-backed panels
-        // (geo-density map, altitude/velocity histograms, percentiles) show a real
-        // distribution rather than everything piled at (0,0). Derived from the sequence
-        // number via a cheap hash, so a run is reproducible.
         // Origin stays the constant "Synthetica" token (everything downstream searches for
-        // it), but aircraft type and the geo/numeric fields get a deterministic spread so
-        // the aggregation-backed panels show a real distribution instead of a pile at
-        // (0,0). Derived from the sequence number via a cheap hash, so a run is reproducible.
+        // it), but aircraft type and the geo/numeric fields get a deterministic-but-varied
+        // spread so the aggregation-backed panels (geo-density map, altitude/velocity
+        // histograms, percentiles) show a real distribution instead of a pile at (0,0).
+        // Derived from the sequence number via a cheap hash, so a run is reproducible.
         let crafts = ["TestJet", "MockLiner", "StubProp", "FixtureWing"];
         let mut docs = Vec::with_capacity(self.batch_size);
         for _ in 0..self.batch_size {
@@ -300,7 +297,7 @@ pub async fn run_ingestion<S: FlightSource + 'static>(
             Err(e) => eprintln!("ingest: fetch failed: {e}"),
         }
         polls += 1;
-        if max_polls.map_or(true, |limit| polls < limit) {
+        if max_polls.is_none_or(|limit| polls < limit) {
             tokio::time::sleep(poll_interval).await;
         }
     }

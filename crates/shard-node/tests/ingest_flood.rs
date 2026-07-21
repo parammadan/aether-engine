@@ -35,6 +35,9 @@ impl FlightSource for FloodSource {
 
 // Multi-threaded runtime: the stalled consumer legitimately blocks a worker thread on the
 // store's std write lock; the producer and the test body need other threads to run on.
+// Holding the store lock across await points IS the test: it stalls the consumer so we can
+// observe the producer throttling behind the channel bound. Intentional, not a defect.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn producer_throttles_when_indexing_stalls_and_resumes_after() {
     let store = Arc::new(RwLock::new(ShardStore::new()));

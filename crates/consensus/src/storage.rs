@@ -289,7 +289,7 @@ impl<A: StateMachineApp> StateMachineStore<A> {
             let name = e.file_name().to_string_lossy().into_owned();
             if let Some(idx) = name.strip_prefix("snap-").and_then(|s| s.strip_suffix(".bin")) {
                 if let Ok(idx) = idx.parse::<u64>() {
-                    if newest.as_ref().map_or(true, |(n, _)| idx > *n) {
+                    if newest.as_ref().is_none_or(|(n, _)| idx > *n) {
                         newest = Some((idx, e.path()));
                     }
                 }

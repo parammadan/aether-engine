@@ -447,9 +447,9 @@ mod tests {
             doc(
                 &format!("id{i:04}"),
                 &format!("FL{i:04}"),
-                if i % 3 == 0 { "United States" } else { "France" },
+                if i.is_multiple_of(3) { "United States" } else { "France" },
                 "XXX",
-                if i % 2 == 0 { "Boeing 737" } else { "Airbus A320" },
+                if i.is_multiple_of(2) { "Boeing 737" } else { "Airbus A320" },
             )
         };
 

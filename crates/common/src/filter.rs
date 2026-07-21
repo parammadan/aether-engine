@@ -89,7 +89,7 @@ fn condition_holds(doc: &FlightDocument, cond: &FilterCondition) -> bool {
         Some(Test::Equals(want)) => text_value(doc, &cond.field).eq_ignore_ascii_case(want),
         Some(Test::Range(r)) => {
             let v = numeric_value(doc, &cond.field);
-            r.min.map_or(true, |min| v >= min) && r.max.map_or(true, |max| v <= max)
+            r.min.is_none_or(|min| v >= min) && r.max.is_none_or(|max| v <= max)
         }
         Some(Test::Is(want)) => doc.on_ground == *want,
         None => false, // rejected by validate(); defensively match nothing

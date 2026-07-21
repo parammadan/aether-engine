@@ -210,7 +210,7 @@ impl Wal {
 
         // The highest existing segment becomes the active one; none -> start at 0.
         let active_seq = seqs.last().copied().filter(|s| {
-            corrupt_at.map_or(true, |(bad, _)| *s <= bad)
+            corrupt_at.is_none_or(|(bad, _)| *s <= bad)
         });
         let (seq, path) = match active_seq {
             Some(s) => (s, segment_path(dir, s)),
@@ -303,7 +303,7 @@ impl Wal {
         // Reclaim closed segments wholly at-or-below the purge point. Safe: every later
         // segment opens with a checkpoint restating the surviving pointers.
         self.closed.retain(|(_, path, max_index)| {
-            let removable = max_index.map_or(true, |m| m <= log_id.index);
+            let removable = max_index.is_none_or(|m| m <= log_id.index);
             if removable {
                 let _ = fs::remove_file(path);
             }

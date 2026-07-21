@@ -31,7 +31,7 @@ struct Cluster {
 
 impl Drop for Cluster {
     fn drop(&mut self) {
-        for (_, child) in self.children.iter_mut() {
+        for child in self.children.values_mut() {
             let _ = child.kill();
             let _ = child.wait();
         }

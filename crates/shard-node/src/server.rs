@@ -86,7 +86,7 @@ impl ShardSearch for ShardSearchService {
         let req = request.into_inner();
         let limit = req.limit as usize;
         if let Some(f) = &req.filter {
-            common::filter::validate(f).map_err(|e| Status::invalid_argument(e))?;
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
         }
 
         // A poisoned lock means a prior handler panicked mid-write; surface it as an
@@ -132,7 +132,7 @@ impl ShardSearch for ShardSearchService {
         let req = request.into_inner();
         let k = if req.limit == 0 { DEFAULT_KNN } else { req.limit as usize };
         if let Some(f) = &req.filter {
-            common::filter::validate(f).map_err(|e| Status::invalid_argument(e))?;
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
         }
 
         let store = self
@@ -183,7 +183,7 @@ impl ShardSearch for ShardSearchService {
     ) -> Result<Response<AggregateResponse>, Status> {
         let req = request.into_inner();
         if let Some(f) = &req.filter {
-            common::filter::validate(f).map_err(|e| Status::invalid_argument(e))?;
+            common::filter::validate(f).map_err(Status::invalid_argument)?;
         }
         let store = self
             .store
