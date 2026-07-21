@@ -25,19 +25,17 @@ pub fn validate(filter: &Filter) -> Result<(), String> {
         let field = cond.field.as_str();
         match &cond.test {
             Some(Test::Equals(_)) => {
-                if !TEXT_FIELDS.contains(&field) {
-                    return Err(format!(
-                        "'{field}' is not a text field (equals applies to: {})",
-                        TEXT_FIELDS.join(", ")
-                    ));
+                // A known numeric/bool column with `equals` is a real type mismatch; any other
+                // name is a text column — built-in or a generic `text` field a connector defined.
+                if NUMERIC_FIELDS.contains(&field) || BOOL_FIELDS.contains(&field) {
+                    return Err(format!("'{field}' is not a text field (equals applies to text/generic fields)"));
                 }
             }
             Some(Test::Range(r)) => {
-                if !NUMERIC_FIELDS.contains(&field) {
-                    return Err(format!(
-                        "'{field}' is not a numeric field (range applies to: {})",
-                        NUMERIC_FIELDS.join(", ")
-                    ));
+                // Symmetric: a known text/bool column with `range` is a mismatch; any other name
+                // is a numeric column — built-in or a generic `number` field.
+                if TEXT_FIELDS.contains(&field) || BOOL_FIELDS.contains(&field) {
+                    return Err(format!("'{field}' is not a numeric field (range applies to numeric/generic fields)"));
                 }
                 if let (Some(min), Some(max)) = (r.min, r.max) {
                     if min > max {
@@ -67,7 +65,8 @@ fn text_value<'a>(doc: &'a FlightDocument, field: &str) -> &'a str {
         "aircraft_type" => &doc.aircraft_type,
         "tenant_id" => &doc.tenant_id,
         "icao24" => &doc.icao24,
-        _ => "",
+        // Generic text field supplied by a connector.
+        _ => doc.text.get(field).map(String::as_str).unwrap_or(""),
     }
 }
 
@@ -80,7 +79,8 @@ fn numeric_value(doc: &FlightDocument, field: &str) -> f64 {
         "latitude" => doc.latitude,
         "longitude" => doc.longitude,
         "observed_at" => doc.observed_at as f64,
-        _ => f64::NAN,
+        // Generic numeric field supplied by a connector.
+        _ => doc.number.get(field).copied().unwrap_or(f64::NAN),
     }
 }
 
@@ -157,11 +157,28 @@ mod tests {
     }
 
     #[test]
-    fn unknown_or_mismatched_fields_are_loud_errors() {
-        assert!(validate(&filter(vec![equals("altitude", "high")])).is_err(), "range field with equals");
+    fn builtin_type_mismatches_are_loud_errors() {
+        assert!(validate(&filter(vec![equals("altitude", "high")])).is_err(), "numeric field with equals");
         assert!(validate(&filter(vec![range("origin", Some(0.0), None)])).is_err(), "text field with range");
-        assert!(validate(&filter(vec![equals("no_such_field", "x")])).is_err(), "unknown field");
         assert!(validate(&filter(vec![range("altitude", Some(5.0), Some(1.0))])).is_err(), "min > max");
+    }
+
+    #[test]
+    fn generic_connector_fields_are_addressable() {
+        // A field not in the built-in schema is a generic text/number field (a connector
+        // defined it). It validates and is matched from the doc's `text`/`number` maps.
+        let mut d = FlightDocument::default();
+        d.text.insert("severity_label".into(), "high".into());
+        d.number.insert("latency_ms".into(), 42.0);
+
+        let f = filter(vec![equals("severity_label", "HIGH")]);
+        assert!(validate(&f).is_ok(), "unknown text field is a valid generic field");
+        assert!(passes(&d, Some(&f)), "generic text field matched case-insensitively");
+
+        let f = filter(vec![range("latency_ms", Some(40.0), Some(50.0))]);
+        assert!(validate(&f).is_ok(), "unknown numeric field is a valid generic field");
+        assert!(passes(&d, Some(&f)), "generic numeric field matched by range");
+        assert!(!passes(&d, Some(&filter(vec![range("latency_ms", Some(100.0), None)]))));
     }
 
     #[test]
