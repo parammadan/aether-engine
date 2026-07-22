@@ -67,9 +67,24 @@ impl Supervisor {
             .env("AETHER_NODE_ID", node_id)
             .env("AETHER_HEARTBEAT_SECS", "2")
             .env("AETHER_POLL_SECS", std::env::var("AETHER_POLL_SECS").unwrap_or_else(|_| "10".into()));
-        // Pass the source choice through (e.g. AETHER_SOURCE=synthetic for offline demos).
-        if let Ok(source) = std::env::var("AETHER_SOURCE") {
-            cmd.env("AETHER_SOURCE", source);
+        // Pass the source choice AND any connector config through, so the dashboard can run
+        // a live connector (e.g. AETHER_SOURCE=http against a real feed) — not just synthetic.
+        for var in [
+            "AETHER_SOURCE",
+            "AETHER_HTTP_URL",
+            "AETHER_HTTP_RECORDS_PATH",
+            "AETHER_HTTP_ID_FIELD",
+            "AETHER_HTTP_ID_PREFIX",
+            "AETHER_S3_INGEST_BUCKET",
+            "AETHER_S3_INGEST_PREFIX",
+            "AETHER_S3_ENDPOINT",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_REGION",
+        ] {
+            if let Ok(val) = std::env::var(var) {
+                cmd.env(var, val);
+            }
         }
         if self.raft {
             cmd.env("AETHER_CONSENSUS", "raft").env("AETHER_GROUP_SIZE", "3");
